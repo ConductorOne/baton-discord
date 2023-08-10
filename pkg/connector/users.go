@@ -3,12 +3,29 @@ package connector
 import (
 	"context"
 
+	"github.com/bwmarrin/discordgo"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/pagination"
+	resource_sdk "github.com/conductorone/baton-sdk/pkg/types/resource"
 )
 
-type userBuilder struct{}
+var userResourceTypeID = "user"
+
+// The user resource type is for all user objects from the database.
+var userResourceType = &v2.ResourceType{
+	Id:          userResourceTypeID,
+	DisplayName: "User",
+	Traits:      []v2.ResourceType_Trait{v2.ResourceType_TRAIT_USER},
+}
+
+type userBuilder struct {
+	conn *discordgo.Session
+}
+
+func newUserResource(user *discordgo.User) (*v2.Resource, error) {
+	return resource_sdk.NewResource(user.Username, userResourceType, user.ID)
+}
 
 func (o *userBuilder) ResourceType(ctx context.Context) *v2.ResourceType {
 	return userResourceType
@@ -30,6 +47,6 @@ func (o *userBuilder) Grants(ctx context.Context, resource *v2.Resource, pToken 
 	return nil, "", nil, nil
 }
 
-func newUserBuilder() *userBuilder {
-	return &userBuilder{}
+func newUserBuilder(s *discordgo.Session) *userBuilder {
+	return &userBuilder{conn: s}
 }
