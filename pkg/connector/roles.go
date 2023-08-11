@@ -30,21 +30,38 @@ func (o *roleBuilder) ResourceType(ctx context.Context) *v2.ResourceType {
 	return roleResourceType
 }
 
+func newRoleResource(role *discordgo.Role, guild *discordgo.Guild) (*v2.Resource, error) {
+	guildResource, err := resource.NewResourceID(guildResourceType, guild.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	group, err := resource.NewRoleResource(
+		role.Name,
+		roleResourceType,
+		role.ID,
+		nil,
+		resource.WithParentResourceID(guildResource),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return group, nil
+}
+
 // List returns all the guilds from the database as resource objects.
 func (o *roleBuilder) List(ctx context.Context, parentResourceID *v2.ResourceId, pToken *pagination.Token) ([]*v2.Resource, string, annotations.Annotations, error) {
 	resources := []*v2.Resource{}
 
 	for _, guild := range o.conn.State.Guilds {
-		groups, err := o.conn.GuildRoles(guild.ID)
+		roles, err := o.conn.GuildRoles(guild.ID)
 		if err != nil {
 			return nil, "", nil, err
 		}
 
-		for _, group := range groups {
-			group, err := resource.NewRoleResource(group.Name, roleResourceType, group.ID, nil, resource.WithParentResourceID(&v2.ResourceId{
-				ResourceType: guildResourceTypeID,
-				Resource:     guild.ID,
-			}))
+		for _, role := range roles {
+			group, err := newRoleResource(role, guild)
 			if err != nil {
 				return nil, "", nil, err
 			}

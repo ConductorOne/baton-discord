@@ -12,7 +12,9 @@ var guildPermissions = []int64{
 	discordgo.PermissionManageRoles,
 }
 
-var channelPermissions = []int64{
+var channelPermissions = append(textChannelPermissions, voiceChannelPermissions...)
+
+var textChannelPermissions = []int64{
 	discordgo.PermissionSendMessages,
 	discordgo.PermissionSendTTSMessages,
 	discordgo.PermissionManageMessages,
@@ -27,6 +29,11 @@ var channelPermissions = []int64{
 	discordgo.PermissionCreatePrivateThreads,
 	discordgo.PermissionUseExternalStickers,
 	discordgo.PermissionSendMessagesInThreads,
+	discordgo.PermissionUseActivities,
+	discordgo.PermissionManageWebhooks,
+}
+
+var voiceChannelPermissions = []int64{
 	discordgo.PermissionVoicePrioritySpeaker,
 	discordgo.PermissionVoiceStreamVideo,
 	discordgo.PermissionVoiceConnect,
@@ -36,8 +43,6 @@ var channelPermissions = []int64{
 	discordgo.PermissionVoiceMoveMembers,
 	discordgo.PermissionVoiceUseVAD,
 	discordgo.PermissionVoiceRequestToSpeak,
-	discordgo.PermissionUseActivities,
-	discordgo.PermissionManageWebhooks,
 }
 
 var permNameFromVal = map[int64]string{
