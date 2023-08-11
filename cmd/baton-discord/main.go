@@ -9,6 +9,7 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/connectorbuilder"
 	"github.com/conductorone/baton-sdk/pkg/types"
 	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
+	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 
 	"github.com/ConductorOne/baton-discord/pkg/connector"
@@ -28,6 +29,7 @@ func main() {
 
 	cmd.Version = version
 
+	cmdFlags(cmd)
 	err = cmd.Execute()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())
@@ -51,4 +53,8 @@ func getConnector(ctx context.Context, cfg *config) (types.ConnectorServer, erro
 	}
 
 	return c, nil
+}
+
+func cmdFlags(cmd *cobra.Command) {
+	cmd.PersistentFlags().String("token", "", "The discord bot token. ($BATON_TOKEN)")
 }
