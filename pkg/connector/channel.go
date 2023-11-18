@@ -117,6 +117,8 @@ func newChannelPermissionGrant(resource *v2.Resource, guild *discordgo.Guild, us
 func (c *channelBuilder) Grants(ctx context.Context, resource *v2.Resource, pToken *pagination.Token) ([]*v2.Grant, string, annotations.Annotations, error) {
 	var grants []*v2.Grant
 
+	debugLog(fmt.Sprintf("channelBuilder.Grants: %+v", resource))
+
 	guild, err := c.conn.Guild(resource.ParentResourceId.Resource)
 	if err != nil {
 		return nil, "", nil, err

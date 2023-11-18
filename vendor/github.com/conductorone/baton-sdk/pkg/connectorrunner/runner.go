@@ -3,9 +3,16 @@ package connectorrunner
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/signal"
 	"time"
+
+	"golang.org/x/sync/semaphore"
+
+	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
+	"go.uber.org/zap"
+	"google.golang.org/protobuf/types/known/durationpb"
 
 	v1 "github.com/conductorone/baton-sdk/pb/c1/connectorapi/baton/v1"
 	ratelimitV1 "github.com/conductorone/baton-sdk/pb/c1/ratelimit/v1"
@@ -13,11 +20,13 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/tasks/c1api"
 	"github.com/conductorone/baton-sdk/pkg/tasks/local"
 	"github.com/conductorone/baton-sdk/pkg/types"
-	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
-	"go.uber.org/zap"
-	"google.golang.org/protobuf/types/known/durationpb"
 
 	"github.com/conductorone/baton-sdk/internal/connector"
+)
+
+const (
+	// taskConcurrency configures how many tasks we run concurrently.
+	taskConcurrency = 3
 )
 
 type connectorRunner struct {
@@ -46,11 +55,6 @@ func (c *connectorRunner) Run(ctx context.Context) error {
 		return err
 	}
 
-	err = c.Close(ctx)
-	if err != nil {
-		return err
-	}
-
 	return nil
 }
 
@@ -67,56 +71,122 @@ func (c *connectorRunner) handleContextCancel(ctx context.Context) error {
 		return nil
 	}
 
-	l.Debug("unexpected context cancellation", zap.Error(err))
+	l.Debug("runner: unexpected context cancellation", zap.Error(err))
 	return err
+}
+func (c *connectorRunner) processTask(ctx context.Context, task *v1.Task) error {
+	cc, err := c.cw.C(ctx)
+	if err != nil {
+		return fmt.Errorf("runner: error creating connector client: %w", err)
+	}
+
+	err = c.tasks.Process(ctx, task, cc)
+	if err != nil {
+		return fmt.Errorf("runner: error processing task: %w", err)
+	}
+
+	return nil
+}
+
+func (c *connectorRunner) backoff(ctx context.Context, errCount int) time.Duration {
+	waitDuration := time.Duration(errCount*errCount) * time.Second
+	if waitDuration > time.Minute {
+		waitDuration = time.Minute
+	}
+	return waitDuration
 }
 
 func (c *connectorRunner) run(ctx context.Context) error {
 	l := ctxzap.Extract(ctx)
 
-	var waitDuration time.Duration
-	var nextTask *v1.Task
+	sem := semaphore.NewWeighted(int64(taskConcurrency))
+
+	waitDuration := time.Second * 0
+	errCount := 0
 	var err error
 	for {
 		select {
 		case <-ctx.Done():
 			return c.handleContextCancel(ctx)
 		case <-time.After(waitDuration):
-		}
-
-		nextTask, waitDuration, err = c.tasks.Next(ctx)
-		if err != nil {
-			l.Error("error getting next task", zap.Error(err))
-			continue
-		}
-
-		if nextTask == nil {
-			l.Info("No tasks available. Waiting to check again.", zap.Duration("wait_duration", waitDuration))
-			if c.oneShot {
-				l.Debug("One-shot mode enabled. Exiting.")
-				return nil
+			l.Debug("runner: claiming worker")
+			// Acquire a worker slot before we call Next() so we don't claim a task before we can actually process it.
+			err = sem.Acquire(ctx, 1)
+			if err != nil {
+				// Any error returned from Acquire() is due to the context being cancelled.
+				sem.Release(1)
+				return c.handleContextCancel(ctx)
 			}
-			continue
-		}
+			l.Debug("runner: worker claimed, checking for next task")
 
-		cc, err := c.cw.C(ctx)
-		if err != nil {
-			l.Error("error getting connector client", zap.Error(err), zap.String("task_id", nextTask.GetId()))
-			continue
-		}
+			// Fetch the next task.
+			nextTask, nextWaitDuration, err := c.tasks.Next(ctx)
+			if err != nil {
+				// TODO(morgabra) Use a library with jitter for this?
+				errCount++
+				waitDuration = c.backoff(ctx, errCount)
+				l.Error("runner: error getting next task", zap.Error(err), zap.Int("err_count", errCount), zap.Duration("wait_duration", waitDuration))
+				sem.Release(1)
+				continue
+			}
 
-		err = c.tasks.Process(ctx, nextTask, cc)
-		if err != nil {
-			l.Error("error processing task", zap.Error(err), zap.String("task_id", nextTask.GetId()))
-			continue
-		}
+			errCount = 0
+			waitDuration = nextWaitDuration
 
-		l.Info("Task complete! Waiting before checking for more tasks...", zap.Duration("wait_duration", waitDuration))
+			// nil tasks mean there are no tasks to process.
+			if nextTask == nil {
+				sem.Release(1)
+				l.Debug("runner: no tasks to process", zap.Duration("wait_duration", waitDuration))
+				if c.oneShot {
+					l.Debug("runner: one-shot mode enabled. Exiting.")
+					return nil
+				}
+				continue
+			}
+
+			l.Debug("runner: got task", zap.String("task_id", nextTask.Id), zap.String("task_type", tasks.GetType(nextTask).String()))
+
+			// If we're in one-shot mode, process the task synchronously.
+			if c.oneShot {
+				l.Debug("runner: one-shot mode enabled. Performing action synchronously.")
+				err := c.processTask(ctx, nextTask)
+				sem.Release(1)
+				if err != nil {
+					l.Error(
+						"runner: error processing on-demand task",
+						zap.Error(err),
+						zap.String("task_id", nextTask.Id),
+						zap.String("task_type", tasks.GetType(nextTask).String()),
+					)
+					return err
+				}
+				continue
+			}
+
+			// We got a task, so process it concurrently.
+			go func(t *v1.Task) {
+				l.Debug("runner: starting processing task", zap.String("task_id", t.Id), zap.String("task_type", tasks.GetType(t).String()))
+				defer sem.Release(1)
+				err := c.processTask(ctx, t)
+				if err != nil {
+					l.Error("runner: error processing task", zap.Error(err), zap.String("task_id", t.Id), zap.String("task_type", tasks.GetType(t).String()))
+				}
+				l.Debug("runner: task processed", zap.String("task_id", t.Id), zap.String("task_type", tasks.GetType(t).String()))
+			}(nextTask)
+
+			l.Debug("runner: dispatched task, waiting for next task", zap.Duration("wait_duration", waitDuration))
+		}
 	}
 }
 
 func (c *connectorRunner) Close(ctx context.Context) error {
-	return nil
+	var retErr error
+
+	if err := c.cw.Close(); err != nil {
+		retErr = errors.Join(retErr, err)
+	}
+
+	return retErr
 }
 
 type Option func(ctx context.Context, cfg *runnerConfig) error
@@ -142,6 +212,7 @@ type runnerConfig struct {
 	provisioningEnabled bool
 	grantConfig         *grantConfig
 	revokeConfig        *revokeConfig
+	tempDir             string
 }
 
 // WithRateLimiterConfig sets the RateLimiterConfig for a runner.
@@ -266,6 +337,13 @@ func WithProvisioningEnabled() Option {
 	}
 }
 
+func WithTempDir(tempDir string) Option {
+	return func(ctx context.Context, cfg *runnerConfig) error {
+		cfg.tempDir = tempDir
+		return nil
+	}
+}
+
 // NewConnectorRunner creates a new connector runner.
 func NewConnectorRunner(ctx context.Context, c types.ConnectorServer, opts ...Option) (*connectorRunner, error) {
 	runner := &connectorRunner{}
@@ -316,7 +394,7 @@ func NewConnectorRunner(ctx context.Context, c types.ConnectorServer, opts ...Op
 			tm = local.NewRevoker(ctx, cfg.c1zPath, cfg.revokeConfig.grantID)
 
 		default:
-			tm, err = local.NewSyncer(ctx, cfg.c1zPath)
+			tm, err = local.NewSyncer(ctx, cfg.c1zPath, local.WithTmpDir(cfg.tempDir))
 			if err != nil {
 				return nil, err
 			}
@@ -328,7 +406,7 @@ func NewConnectorRunner(ctx context.Context, c types.ConnectorServer, opts ...Op
 		return runner, nil
 	}
 
-	tm, err := c1api.NewC1TaskManager(ctx, cfg.clientID, cfg.clientSecret)
+	tm, err := c1api.NewC1TaskManager(ctx, cfg.clientID, cfg.clientSecret, cfg.tempDir)
 	if err != nil {
 		return nil, err
 	}

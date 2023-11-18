@@ -1,7 +1,9 @@
 package connector
 
 import (
+	"fmt"
 	"github.com/bwmarrin/discordgo"
+	"time"
 )
 
 var guildPermissions = []int64{
@@ -76,4 +78,8 @@ var permNameFromVal = map[int64]string{
 	discordgo.PermissionManageNicknames:       "ManageNicknames",
 	discordgo.PermissionChangeNickname:        "ChangeNickname",
 	discordgo.PermissionManageRoles:           "ManageRoles",
+}
+
+func debugLog(s string) {
+	fmt.Printf("[%s] %s\n", time.Now().Format(time.DateTime), s)
 }
