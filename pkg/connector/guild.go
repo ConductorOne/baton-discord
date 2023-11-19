@@ -71,7 +71,7 @@ func (o *guildBuilder) Grants(ctx context.Context, resource *v2.Resource, pToken
 		return nil, "", nil, err
 	}
 
-	guildMembers, err := o.conn.GuildMembers(resource.Id.Resource, pToken.Token, pToken.Size)
+	guildMembers, err := o.conn.GuildMembers(resource.Id.Resource, pToken.Token, 1000)
 	if err != nil {
 		return nil, "", nil, err
 	}
