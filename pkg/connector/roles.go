@@ -191,11 +191,7 @@ func newRolePermissionGrant(resource *v2.Resource, guild *discordgo.Guild, role 
 
 	return grant.NewGrant(
 		resource,
-		entitlement.NewPermissionEntitlement(
-			resource,
-			fmt.Sprintf("%s for %s", permNameFromVal[permission], role.Name),
-			entitlement.WithGrantableTo(userResourceType),
-		).DisplayName,
+		newRolePermissionEntitlement(resource, role.Name, permission).DisplayName,
 		rolePrincipal,
 	), nil
 }
