@@ -102,7 +102,7 @@ func (o *channelBuilder) Entitlements(_ context.Context, resource *v2.Resource, 
 	return entitlements, "", nil, nil
 }
 
-func newChannelPermissionGrant(resource *v2.Resource, guild *discordgo.Guild, user *discordgo.User, channel *discordgo.Channel, permission int64) (*v2.Grant, error) {
+func newChannelUserPermissionGrant(resource *v2.Resource, guild *discordgo.Guild, user *discordgo.User, channel *discordgo.Channel, permission int64) (*v2.Grant, error) {
 	userPrincipal, err := newUserResource(user, guild)
 	if err != nil {
 		return nil, err
@@ -145,7 +145,7 @@ func (c *channelBuilder) Grants(ctx context.Context, resource *v2.Resource, pTok
 				continue
 			}
 
-			grant, err := newChannelPermissionGrant(resource, guild, user, channel, permission)
+			grant, err := newChannelUserPermissionGrant(resource, guild, user, channel, permission)
 			if err != nil {
 				return nil, "", nil, err
 			}

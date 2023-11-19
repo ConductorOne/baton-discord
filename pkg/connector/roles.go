@@ -11,6 +11,7 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/types/entitlement"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
 	"github.com/conductorone/baton-sdk/pkg/types/resource"
+	"slices"
 )
 
 var roleResourceTypeID = "role"
@@ -76,34 +77,39 @@ func (o *roleBuilder) List(ctx context.Context, parentResourceID *v2.ResourceId,
 }
 
 func (o *roleBuilder) Entitlements(_ context.Context, resource *v2.Resource, _ *pagination.Token) ([]*v2.Entitlement, string, annotations.Annotations, error) {
-	roles, err := o.conn.GuildRoles(resource.ParentResourceId.Resource)
+	role, err := o.getRole(resource.ParentResourceId.Resource, resource.Id.Resource)
 	if err != nil {
-		return nil, "", nil, err
+		return nil, "", nil, fmt.Errorf("role not found: %w", err)
 	}
 
-	var role *discordgo.Role
-	for _, thisRole := range roles {
-		if thisRole.ID != resource.Id.Resource {
-			continue
-		}
-
-		role = thisRole
-		break
-	}
-
-	if role == nil {
-		return nil, "", nil, errors.New("role not found")
-	}
-
-	return []*v2.Entitlement{
+	entitlements := []*v2.Entitlement{
 		newRoleAssignmentEntitlement(resource, role.Name),
-	}, "", nil, nil
+	}
+	for _, permission := range append(channelPermissions, guildPermissions...) {
+		entitlements = append(
+			entitlements,
+			newRolePermissionEntitlement(
+				resource,
+				role.Name,
+				permission,
+			),
+		)
+	}
+
+	return entitlements, "", nil, nil
 }
 
 func newRoleAssignmentEntitlement(resource *v2.Resource, name string) *v2.Entitlement {
 	return entitlement.NewAssignmentEntitlement(
 		resource,
 		fmt.Sprintf("Member of %s", name),
+		entitlement.WithGrantableTo(userResourceType),
+	)
+}
+func newRolePermissionEntitlement(resource *v2.Resource, name string, permission int64) *v2.Entitlement {
+	return entitlement.NewAssignmentEntitlement(
+		resource,
+		fmt.Sprintf("%s for %s", permNameFromVal[permission], name),
 		entitlement.WithGrantableTo(userResourceType),
 	)
 }
@@ -177,6 +183,23 @@ func (c *roleBuilder) getRole(guildID string, roleID string) (*discordgo.Role, e
 	return role, nil
 }
 
+func newRolePermissionGrant(resource *v2.Resource, guild *discordgo.Guild, role *discordgo.Role, permission int64) (*v2.Grant, error) {
+	rolePrincipal, err := newRoleResource(role, guild)
+	if err != nil {
+		return nil, err
+	}
+
+	return grant.NewGrant(
+		resource,
+		entitlement.NewPermissionEntitlement(
+			resource,
+			fmt.Sprintf("%s for %s", permNameFromVal[permission], role.Name),
+			entitlement.WithGrantableTo(userResourceType),
+		).DisplayName,
+		rolePrincipal,
+	), nil
+}
+
 func (c *roleBuilder) Grants(ctx context.Context, resource *v2.Resource, _ *pagination.Token) ([]*v2.Grant, string, annotations.Annotations, error) {
 	var grants []*v2.Grant
 
@@ -192,29 +215,47 @@ func (c *roleBuilder) Grants(ctx context.Context, resource *v2.Resource, _ *pagi
 		return nil, "", nil, err
 	}
 
+	discordRole, err := c.getRole(guildID, resource.Id.Resource)
+	if err != nil {
+		return nil, "", nil, err
+	}
+
+	for _, permission := range channelPermissions {
+		if discordRole.Permissions&permission != permission {
+			continue
+		}
+
+		role, err := newRolePermissionGrant(
+			resource,
+			guild,
+			discordRole,
+			permission,
+		)
+		if err != nil {
+			return nil, "", nil, err
+		}
+
+		grants = append(grants, role)
+	}
+
 	for _, member := range members {
 		userPrincipal, err := newUserResource(member.User, guild)
 		if err != nil {
 			return nil, "", nil, err
 		}
-		for _, role := range member.Roles {
-			if role != resource.Id.Resource {
-				continue
-			}
-			discordRole, err := c.getRole(guildID, role)
-			if err != nil {
-				return nil, "", nil, err
-			}
 
-			grants = append(
-				grants,
-				grant.NewGrant(
-					resource,
-					newRoleAssignmentEntitlement(resource, discordRole.Name).DisplayName,
-					userPrincipal,
-				),
-			)
+		if !slices.Contains(member.Roles, resource.Id.Resource) {
+			continue
 		}
+
+		grants = append(
+			grants,
+			grant.NewGrant(
+				resource,
+				newRoleAssignmentEntitlement(resource, discordRole.Name).DisplayName,
+				userPrincipal,
+			),
+		)
 	}
 
 	return grants, "", nil, nil

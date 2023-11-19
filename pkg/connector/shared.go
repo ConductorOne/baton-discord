@@ -12,6 +12,7 @@ var guildPermissions = []int64{
 	discordgo.PermissionManageNicknames,
 	discordgo.PermissionChangeNickname,
 	discordgo.PermissionManageRoles,
+	discordgo.PermissionAdministrator,
 }
 
 var channelPermissions = append(textChannelPermissions, voiceChannelPermissions...)
@@ -48,6 +49,7 @@ var voiceChannelPermissions = []int64{
 }
 
 var permNameFromVal = map[int64]string{
+	discordgo.PermissionAdministrator:         "Administrator",
 	discordgo.PermissionSendMessages:          "SendMessages",
 	discordgo.PermissionSendTTSMessages:       "SendTTSMessages",
 	discordgo.PermissionManageMessages:        "ManageMessages",
