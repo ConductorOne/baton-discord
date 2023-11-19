@@ -12,7 +12,17 @@ var guildPermissions = []int64{
 	discordgo.PermissionManageNicknames,
 	discordgo.PermissionChangeNickname,
 	discordgo.PermissionManageRoles,
+	discordgo.PermissionCreateInstantInvite,
+	discordgo.PermissionKickMembers,
+	discordgo.PermissionBanMembers,
 	discordgo.PermissionAdministrator,
+	discordgo.PermissionManageChannels,
+	discordgo.PermissionManageServer,
+	discordgo.PermissionAddReactions,
+	discordgo.PermissionViewAuditLogs,
+	discordgo.PermissionViewChannel,
+	discordgo.PermissionViewGuildInsights,
+	discordgo.PermissionModerateMembers,
 }
 
 var channelPermissions = append(textChannelPermissions, voiceChannelPermissions...)
@@ -80,6 +90,16 @@ var permNameFromVal = map[int64]string{
 	discordgo.PermissionManageNicknames:       "ManageNicknames",
 	discordgo.PermissionChangeNickname:        "ChangeNickname",
 	discordgo.PermissionManageRoles:           "ManageRoles",
+	discordgo.PermissionCreateInstantInvite:   "CreateInstantInvite",
+	discordgo.PermissionKickMembers:           "KickMembers",
+	discordgo.PermissionBanMembers:            "BanMembers",
+	discordgo.PermissionManageChannels:        "ManageChannels",
+	discordgo.PermissionManageServer:          "ManageServer",
+	discordgo.PermissionAddReactions:          "AddReactions",
+	discordgo.PermissionViewAuditLogs:         "ViewAuditLogs",
+	discordgo.PermissionViewChannel:           "ViewChannel",
+	discordgo.PermissionViewGuildInsights:     "ViewGuildInsights",
+	discordgo.PermissionModerateMembers:       "ModerateMembers",
 }
 
 func debugLog(s string) {
