@@ -23,25 +23,33 @@ type userBuilder struct {
 	conn *discordgo.Session
 }
 
-func newUserResource(user *discordgo.User, guild *discordgo.Guild) (*v2.Resource, error) {
+func newMemberResource(user *discordgo.Member, guild *discordgo.Guild) (*v2.Resource, error) {
 	guildResource, err := resource_sdk.NewResourceID(guildResourceType, guild.ID)
 	if err != nil {
 		return nil, err
 	}
 
 	options := []resource_sdk.UserTraitOption{}
-	if user.Bot {
+	if user.User.Bot {
 		options = append(options, resource_sdk.WithAccountType(v2.UserTrait_ACCOUNT_TYPE_SERVICE))
 	} else {
 		options = append(options, resource_sdk.WithAccountType(v2.UserTrait_ACCOUNT_TYPE_HUMAN))
 	}
 
+	name := user.Nick
+	if name == "" {
+		name = user.User.Username
+	}
+
 	return resource_sdk.NewUserResource(
-		user.Username,
+		name,
 		userResourceType,
-		user.ID,
+		user.User.ID,
 		options,
 		resource_sdk.WithParentResourceID(guildResource),
+		resource_sdk.WithUserTrait(
+			resource_sdk.WithUserLogin(user.User.Username),
+		),
 	)
 }
 
@@ -54,9 +62,9 @@ func (o *userBuilder) ResourceType(ctx context.Context) *v2.ResourceType {
 func (o *userBuilder) List(ctx context.Context, parentResourceID *v2.ResourceId, pToken *pagination.Token) ([]*v2.Resource, string, annotations.Annotations, error) {
 	resources := []*v2.Resource{}
 
-	for _, guild := range o.conn.State.Guilds {
+	for _, baseGuild := range o.conn.State.Guilds {
 		nextPageToken := ""
-		guild, err := o.conn.Guild(guild.ID)
+		guild, err := o.conn.Guild(baseGuild.ID)
 		if err != nil {
 			return nil, "", nil, err
 		}
@@ -67,7 +75,7 @@ func (o *userBuilder) List(ctx context.Context, parentResourceID *v2.ResourceId,
 				return nil, "", nil, err
 			}
 			for _, user := range members {
-				resource, err := newUserResource(user.User, guild)
+				resource, err := newMemberResource(user, guild)
 				if err != nil {
 					return nil, "", nil, err
 				}

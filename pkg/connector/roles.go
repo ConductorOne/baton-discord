@@ -235,7 +235,7 @@ func (c *roleBuilder) Grants(ctx context.Context, resource *v2.Resource, _ *pagi
 	}
 
 	for _, member := range members {
-		userPrincipal, err := newUserResource(member.User, guild)
+		userPrincipal, err := newMemberResource(member, guild)
 		if err != nil {
 			return nil, "", nil, err
 		}

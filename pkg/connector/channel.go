@@ -102,8 +102,8 @@ func (o *channelBuilder) Entitlements(_ context.Context, resource *v2.Resource, 
 	return entitlements, "", nil, nil
 }
 
-func newChannelUserPermissionGrant(resource *v2.Resource, guild *discordgo.Guild, user *discordgo.User, channel *discordgo.Channel, permission int64) (*v2.Grant, error) {
-	userPrincipal, err := newUserResource(user, guild)
+func newChannelUserPermissionGrant(resource *v2.Resource, guild *discordgo.Guild, user *discordgo.Member, channel *discordgo.Channel, permission int64) (*v2.Grant, error) {
+	userPrincipal, err := newMemberResource(user, guild)
 	if err != nil {
 		return nil, err
 	}
@@ -128,15 +128,15 @@ func (c *channelBuilder) Grants(ctx context.Context, resource *v2.Resource, pTok
 	if err != nil {
 		return nil, "", nil, err
 	}
-	for _, member := range channel.PermissionOverwrites {
-		if member.Type != discordgo.PermissionOverwriteTypeMember {
+	for _, permissionOverrideMember := range channel.PermissionOverwrites {
+		if permissionOverrideMember.Type != discordgo.PermissionOverwriteTypeMember {
 			continue
 		}
-		user, err := c.conn.User(member.ID)
+		member, err := c.conn.GuildMember(guild.ID, permissionOverrideMember.ID)
 		if err != nil {
 			return nil, "", nil, err
 		}
-		userPermissionsBitmask, err := c.conn.UserChannelPermissions(member.ID, channel.ID)
+		userPermissionsBitmask, err := c.conn.UserChannelPermissions(member.User.ID, channel.ID)
 		if err != nil {
 			return nil, "", nil, err
 		}
@@ -145,7 +145,7 @@ func (c *channelBuilder) Grants(ctx context.Context, resource *v2.Resource, pTok
 				continue
 			}
 
-			grant, err := newChannelUserPermissionGrant(resource, guild, user, channel, permission)
+			grant, err := newChannelUserPermissionGrant(resource, guild, member, channel, permission)
 			if err != nil {
 				return nil, "", nil, err
 			}

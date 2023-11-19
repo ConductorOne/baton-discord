@@ -77,7 +77,7 @@ func (o *guildBuilder) Grants(ctx context.Context, resource *v2.Resource, pToken
 	}
 
 	for _, member := range guildMembers {
-		userPrincipal, err := newUserResource(member.User, guild)
+		userPrincipal, err := newMemberResource(member, guild)
 		if err != nil {
 			return nil, "", nil, err
 		}
