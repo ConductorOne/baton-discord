@@ -59,20 +59,23 @@ func (o *userBuilder) ResourceType(ctx context.Context) *v2.ResourceType {
 
 // List returns all the users from the database as resource objects.
 // Users include a UserTrait because they are the 'shape' of a standard user.
-func (o *userBuilder) List(ctx context.Context, parentResourceID *v2.ResourceId, pToken *pagination.Token) ([]*v2.Resource, string, annotations.Annotations, error) {
+func (o *userBuilder) List(ctx context.Context, parentResourceID *v2.ResourceId, _ *pagination.Token) ([]*v2.Resource, string, annotations.Annotations, error) {
 	resources := []*v2.Resource{}
 
 	for _, baseGuild := range o.conn.State.Guilds {
-		nextPageToken := ""
 		guild, err := o.conn.Guild(baseGuild.ID)
 		if err != nil {
 			return nil, "", nil, err
 		}
 
+		nextPageToken := ""
 		for {
 			members, err := o.conn.GuildMembers(guild.ID, nextPageToken, 1000)
 			if err != nil {
 				return nil, "", nil, err
+			}
+			if len(members) == 0 {
+				break
 			}
 			for _, user := range members {
 				resource, err := newMemberResource(user, guild)
@@ -85,9 +88,6 @@ func (o *userBuilder) List(ctx context.Context, parentResourceID *v2.ResourceId,
 			nextPageToken = ""
 			if len(members) > 0 {
 				nextPageToken = members[len(members)-1].User.ID
-			}
-			if nextPageToken == "" {
-				break
 			}
 		}
 	}

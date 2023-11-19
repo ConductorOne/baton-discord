@@ -30,7 +30,7 @@ type roleBuilder struct {
 	roleCache  map[string]map[string]*discordgo.Role
 }
 
-func (o *roleBuilder) ResourceType(ctx context.Context) *v2.ResourceType {
+func (r *roleBuilder) ResourceType(ctx context.Context) *v2.ResourceType {
 	return roleResourceType
 }
 
@@ -55,11 +55,11 @@ func newRoleResource(role *discordgo.Role, guild *discordgo.Guild) (*v2.Resource
 }
 
 // List returns all the guilds from the database as resource objects.
-func (o *roleBuilder) List(ctx context.Context, parentResourceID *v2.ResourceId, pToken *pagination.Token) ([]*v2.Resource, string, annotations.Annotations, error) {
+func (r *roleBuilder) List(ctx context.Context, parentResourceID *v2.ResourceId, pToken *pagination.Token) ([]*v2.Resource, string, annotations.Annotations, error) {
 	resources := []*v2.Resource{}
 
-	for _, guild := range o.conn.State.Guilds {
-		roles, err := o.conn.GuildRoles(guild.ID)
+	for _, guild := range r.conn.State.Guilds {
+		roles, err := r.conn.GuildRoles(guild.ID)
 		if err != nil {
 			return nil, "", nil, err
 		}
@@ -76,8 +76,8 @@ func (o *roleBuilder) List(ctx context.Context, parentResourceID *v2.ResourceId,
 	return resources, "", nil, nil
 }
 
-func (o *roleBuilder) Entitlements(_ context.Context, resource *v2.Resource, _ *pagination.Token) ([]*v2.Entitlement, string, annotations.Annotations, error) {
-	role, err := o.getRole(resource.ParentResourceId.Resource, resource.Id.Resource)
+func (r *roleBuilder) Entitlements(_ context.Context, resource *v2.Resource, _ *pagination.Token) ([]*v2.Entitlement, string, annotations.Annotations, error) {
+	role, err := r.getRole(resource.ParentResourceId.Resource, resource.Id.Resource)
 	if err != nil {
 		return nil, "", nil, fmt.Errorf("role not found: %w", err)
 	}
@@ -114,29 +114,29 @@ func newRolePermissionEntitlement(resource *v2.Resource, name string, permission
 	)
 }
 
-func (c *roleBuilder) getGuild(guildID string) (*discordgo.Guild, error) {
-	guild, ok := c.guildCache[guildID]
+func (r *roleBuilder) getGuild(guildID string) (*discordgo.Guild, error) {
+	guild, ok := r.guildCache[guildID]
 	if !ok {
 		var err error
-		guild, err = c.conn.Guild(guildID)
+		guild, err = r.conn.Guild(guildID)
 		if err != nil {
 			return nil, err
 		}
-		c.guildCache[guildID] = guild
+		r.guildCache[guildID] = guild
 	}
 
 	return guild, nil
 }
 
-func (c *roleBuilder) getMembers(guildID string) (map[string]*discordgo.Member, error) {
-	userCache, ok := c.userCache[guildID]
+func (r *roleBuilder) getMembers(guildID string) (map[string]*discordgo.Member, error) {
+	userCache, ok := r.userCache[guildID]
 	if !ok {
 		userCache = make(map[string]*discordgo.Member)
-		c.userCache[guildID] = userCache
+		r.userCache[guildID] = userCache
 
 		token := ""
 		for {
-			guildMembers, err := c.conn.GuildMembers(guildID, token, 1000)
+			guildMembers, err := r.conn.GuildMembers(guildID, token, 1000)
 			if err != nil {
 				return nil, err
 			}
@@ -153,20 +153,20 @@ func (c *roleBuilder) getMembers(guildID string) (map[string]*discordgo.Member, 
 		}
 	}
 
-	user, ok := c.userCache[guildID]
+	user, ok := r.userCache[guildID]
 	if !ok {
 		return nil, errors.New("user not found")
 	}
 	return user, nil
 }
 
-func (c *roleBuilder) getRole(guildID string, roleID string) (*discordgo.Role, error) {
-	roleCache, ok := c.roleCache[guildID]
+func (r *roleBuilder) getRole(guildID string, roleID string) (*discordgo.Role, error) {
+	roleCache, ok := r.roleCache[guildID]
 	if !ok {
 		roleCache = make(map[string]*discordgo.Role)
-		c.roleCache[guildID] = roleCache
+		r.roleCache[guildID] = roleCache
 
-		roles, err := c.conn.GuildRoles(guildID)
+		roles, err := r.conn.GuildRoles(guildID)
 		if err != nil {
 			return nil, err
 		}
@@ -176,7 +176,7 @@ func (c *roleBuilder) getRole(guildID string, roleID string) (*discordgo.Role, e
 		}
 	}
 
-	role, ok := c.roleCache[guildID][roleID]
+	role, ok := r.roleCache[guildID][roleID]
 	if !ok {
 		return nil, errors.New("role not found")
 	}
@@ -196,22 +196,22 @@ func newRolePermissionGrant(resource *v2.Resource, guild *discordgo.Guild, role 
 	), nil
 }
 
-func (c *roleBuilder) Grants(ctx context.Context, resource *v2.Resource, _ *pagination.Token) ([]*v2.Grant, string, annotations.Annotations, error) {
+func (r *roleBuilder) Grants(ctx context.Context, resource *v2.Resource, _ *pagination.Token) ([]*v2.Grant, string, annotations.Annotations, error) {
 	var grants []*v2.Grant
 
 	debugLog(fmt.Sprintf("roleBuilder.Grants: %+v", resource))
 	guildID := resource.ParentResourceId.Resource
-	guild, err := c.getGuild(guildID)
+	guild, err := r.getGuild(guildID)
 	if err != nil {
 		return nil, "", nil, err
 	}
 
-	members, err := c.getMembers(guild.ID)
+	members, err := r.getMembers(guild.ID)
 	if err != nil {
 		return nil, "", nil, err
 	}
 
-	discordRole, err := c.getRole(guildID, resource.Id.Resource)
+	discordRole, err := r.getRole(guildID, resource.Id.Resource)
 	if err != nil {
 		return nil, "", nil, err
 	}

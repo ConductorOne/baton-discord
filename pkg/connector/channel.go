@@ -2,6 +2,7 @@ package connector
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/bwmarrin/discordgo"
@@ -22,6 +23,8 @@ var channelResourceType = &v2.ResourceType{
 
 type channelBuilder struct {
 	conn *discordgo.Session
+
+	memberCache map[string]map[string]*discordgo.Member
 }
 
 func (o *channelBuilder) ResourceType(ctx context.Context) *v2.ResourceType {
@@ -114,7 +117,46 @@ func newChannelUserPermissionGrant(resource *v2.Resource, guild *discordgo.Guild
 		userPrincipal,
 	), nil
 }
-func (c *channelBuilder) Grants(ctx context.Context, resource *v2.Resource, pToken *pagination.Token) ([]*v2.Grant, string, annotations.Annotations, error) {
+
+func (c *channelBuilder) getMember(guildID string, memberID string) (*discordgo.Member, error) {
+	userCache, ok := c.memberCache[guildID]
+	if !ok {
+		userCache = make(map[string]*discordgo.Member)
+		c.memberCache[guildID] = userCache
+
+		token := ""
+		for {
+			guildMembers, err := c.conn.GuildMembers(guildID, token, 1000)
+			if err != nil {
+				return nil, err
+			}
+
+			if len(guildMembers) == 0 {
+				break
+			}
+
+			for _, member := range guildMembers {
+				userCache[member.User.ID] = member
+			}
+
+			token = guildMembers[len(guildMembers)-1].User.ID
+		}
+	}
+
+	users, ok := c.memberCache[guildID]
+	if !ok {
+		return nil, errors.New("guild members not found")
+	}
+
+	user, ok := users[memberID]
+	if !ok {
+		return nil, errors.New("member not found")
+	}
+
+	return user, nil
+}
+
+func (c *channelBuilder) Grants(ctx context.Context, resource *v2.Resource, _ *pagination.Token) ([]*v2.Grant, string, annotations.Annotations, error) {
 	var grants []*v2.Grant
 
 	debugLog(fmt.Sprintf("channelBuilder.Grants: %+v", resource))
@@ -132,7 +174,7 @@ func (c *channelBuilder) Grants(ctx context.Context, resource *v2.Resource, pTok
 		if permissionOverrideMember.Type != discordgo.PermissionOverwriteTypeMember {
 			continue
 		}
-		member, err := c.conn.GuildMember(guild.ID, permissionOverrideMember.ID)
+		member, err := c.getMember(guild.ID, permissionOverrideMember.ID)
 		if err != nil {
 			return nil, "", nil, err
 		}
@@ -158,5 +200,5 @@ func (c *channelBuilder) Grants(ctx context.Context, resource *v2.Resource, pTok
 }
 
 func newChannelBuilder(s *discordgo.Session) *channelBuilder {
-	return &channelBuilder{conn: s}
+	return &channelBuilder{conn: s, memberCache: make(map[string]map[string]*discordgo.Member)}
 }
