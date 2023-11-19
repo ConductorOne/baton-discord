@@ -24,7 +24,8 @@ var channelResourceType = &v2.ResourceType{
 type channelBuilder struct {
 	conn *discordgo.Session
 
-	memberCache map[string]map[string]*discordgo.Member
+	memberCache  map[string]map[string]*discordgo.Member
+	channelCache map[string]map[string]*discordgo.Channel
 }
 
 func (o *channelBuilder) ResourceType(ctx context.Context) *v2.ResourceType {
@@ -118,6 +119,30 @@ func newChannelUserPermissionGrant(resource *v2.Resource, guild *discordgo.Guild
 	), nil
 }
 
+func (c *channelBuilder) getChannel(guildID string, channelID string) (*discordgo.Channel, error) {
+	channelCache, ok := c.channelCache[guildID]
+	if !ok {
+		channelCache = make(map[string]*discordgo.Channel)
+		c.channelCache[guildID] = channelCache
+
+		guildChannels, err := c.conn.GuildChannels(guildID)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, channel := range guildChannels {
+			channelCache[channel.ID] = channel
+		}
+	}
+
+	channel, ok := channelCache[guildID]
+	if !ok {
+		return nil, errors.New("channel not found")
+	}
+
+	return channel, nil
+}
+
 func (c *channelBuilder) getMember(guildID string, memberID string) (*discordgo.Member, error) {
 	userCache, ok := c.memberCache[guildID]
 	if !ok {
@@ -143,12 +168,7 @@ func (c *channelBuilder) getMember(guildID string, memberID string) (*discordgo.
 		}
 	}
 
-	users, ok := c.memberCache[guildID]
-	if !ok {
-		return nil, errors.New("guild members not found")
-	}
-
-	user, ok := users[memberID]
+	user, ok := userCache[memberID]
 	if !ok {
 		return nil, errors.New("member not found")
 	}
@@ -166,7 +186,7 @@ func (c *channelBuilder) Grants(ctx context.Context, resource *v2.Resource, _ *p
 		return nil, "", nil, err
 	}
 
-	channel, err := c.conn.Channel(resource.Id.Resource)
+	channel, err := c.getChannel(guild.ID, resource.Id.Resource)
 	if err != nil {
 		return nil, "", nil, err
 	}
