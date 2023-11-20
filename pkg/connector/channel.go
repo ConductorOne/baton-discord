@@ -25,6 +25,7 @@ type channelBuilder struct {
 	conn *discordgo.Session
 
 	memberCache  map[string]map[string]*discordgo.Member
+	roleCache    map[string]map[string]*discordgo.Role
 	channelCache map[string]map[string]*discordgo.Channel
 }
 
@@ -118,6 +119,18 @@ func newChannelUserPermissionGrant(resource *v2.Resource, guild *discordgo.Guild
 		userPrincipal,
 	), nil
 }
+func newChannelRolePermissionGrant(resource *v2.Resource, guild *discordgo.Guild, role *discordgo.Role, channel *discordgo.Channel, permission int64) (*v2.Grant, error) {
+	rolePrincipal, err := newRoleResource(role, guild)
+	if err != nil {
+		return nil, err
+	}
+
+	return grant.NewGrant(
+		resource,
+		newChannelEntitlement(resource, permission, channel).DisplayName,
+		rolePrincipal,
+	), nil
+}
 
 func (c *channelBuilder) getChannel(guildID string, channelID string) (*discordgo.Channel, error) {
 	channelCache, ok := c.channelCache[guildID]
@@ -175,6 +188,29 @@ func (c *channelBuilder) getMember(guildID string, memberID string) (*discordgo.
 
 	return user, nil
 }
+func (c *channelBuilder) getRole(guildID string, roleID string) (*discordgo.Role, error) {
+	roleCache, ok := c.roleCache[guildID]
+	if !ok {
+		roleCache = make(map[string]*discordgo.Role)
+		c.roleCache[guildID] = roleCache
+
+		guildRoles, err := c.conn.GuildRoles(guildID)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, role := range guildRoles {
+			roleCache[role.ID] = role
+		}
+	}
+
+	role, ok := roleCache[roleID]
+	if !ok {
+		return nil, errors.New("role not found")
+	}
+
+	return role, nil
+}
 
 func (c *channelBuilder) Grants(ctx context.Context, resource *v2.Resource, _ *pagination.Token) ([]*v2.Grant, string, annotations.Annotations, error) {
 	var grants []*v2.Grant
@@ -190,35 +226,82 @@ func (c *channelBuilder) Grants(ctx context.Context, resource *v2.Resource, _ *p
 	if err != nil {
 		return nil, "", nil, err
 	}
-	for _, permissionOverrideMember := range channel.PermissionOverwrites {
-		if permissionOverrideMember.Type != discordgo.PermissionOverwriteTypeMember {
+	for _, permissionOverride := range channel.PermissionOverwrites {
+		if permissionOverride.Type != discordgo.PermissionOverwriteTypeMember {
 			continue
 		}
-		member, err := c.getMember(guild.ID, permissionOverrideMember.ID)
-		if err != nil {
-			return nil, "", nil, err
-		}
-		userPermissionsBitmask, err := c.conn.UserChannelPermissions(member.User.ID, channel.ID)
-		if err != nil {
-			return nil, "", nil, err
-		}
-		for _, permission := range channelPermissions {
-			if userPermissionsBitmask&permission != permission {
-				continue
-			}
 
-			grant, err := newChannelUserPermissionGrant(resource, guild, member, channel, permission)
+		switch permissionOverride.Type {
+		case discordgo.PermissionOverwriteTypeMember:
+			memberGrants, err := c.getChannelGrantForMember(resource, guild, channel, permissionOverride)
 			if err != nil {
 				return nil, "", nil, err
 			}
-
-			grants = append(grants, grant)
+			grants = append(grants, memberGrants...)
+		case discordgo.PermissionOverwriteTypeRole:
+			roleGrants, err := c.getChannelGrantForRole(resource, guild, channel, permissionOverride)
+			if err != nil {
+				return nil, "", nil, err
+			}
+			grants = append(grants, roleGrants...)
 		}
+
 	}
 
 	return grants, "", nil, nil
 }
 
+func (c *channelBuilder) getChannelGrantForRole(resource *v2.Resource, guild *discordgo.Guild, channel *discordgo.Channel, permission *discordgo.PermissionOverwrite) ([]*v2.Grant, error) {
+	var grants []*v2.Grant
+	role, err := c.getRole(guild.ID, permission.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, channelPerm := range channelPermissions {
+		if role.Permissions&channelPerm != channelPerm {
+			continue
+		}
+
+		grant, err := newChannelRolePermissionGrant(resource, guild, role, channel, channelPerm)
+		if err != nil {
+			return nil, err
+		}
+
+		grants = append(grants, grant)
+	}
+	return grants, nil
+}
+func (c *channelBuilder) getChannelGrantForMember(resource *v2.Resource, guild *discordgo.Guild, channel *discordgo.Channel, permission *discordgo.PermissionOverwrite) ([]*v2.Grant, error) {
+	var grants []*v2.Grant
+	member, err := c.getMember(guild.ID, permission.ID)
+	if err != nil {
+		return nil, err
+	}
+	userPermissionsBitmask, err := c.conn.UserChannelPermissions(member.User.ID, channel.ID)
+	if err != nil {
+		return nil, err
+	}
+	for _, channelPerm := range channelPermissions {
+		if userPermissionsBitmask&channelPerm != channelPerm {
+			continue
+		}
+
+		grant, err := newChannelUserPermissionGrant(resource, guild, member, channel, channelPerm)
+		if err != nil {
+			return nil, err
+		}
+
+		grants = append(grants, grant)
+	}
+	return grants, nil
+}
+
 func newChannelBuilder(s *discordgo.Session) *channelBuilder {
-	return &channelBuilder{conn: s, memberCache: make(map[string]map[string]*discordgo.Member)}
+	return &channelBuilder{
+		conn:         s,
+		memberCache:  make(map[string]map[string]*discordgo.Member),
+		roleCache:    make(map[string]map[string]*discordgo.Role),
+		channelCache: make(map[string]map[string]*discordgo.Channel),
+	}
 }
