@@ -227,10 +227,6 @@ func (c *channelBuilder) Grants(ctx context.Context, resource *v2.Resource, _ *p
 		return nil, "", nil, err
 	}
 	for _, permissionOverride := range channel.PermissionOverwrites {
-		if permissionOverride.Type != discordgo.PermissionOverwriteTypeMember {
-			continue
-		}
-
 		switch permissionOverride.Type {
 		case discordgo.PermissionOverwriteTypeMember:
 			memberGrants, err := c.getChannelGrantForMember(resource, guild, channel, permissionOverride)
