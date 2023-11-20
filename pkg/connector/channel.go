@@ -148,7 +148,7 @@ func (c *channelBuilder) getChannel(guildID string, channelID string) (*discordg
 		}
 	}
 
-	channel, ok := channelCache[guildID]
+	channel, ok := channelCache[channelID]
 	if !ok {
 		return nil, errors.New("channel not found")
 	}
