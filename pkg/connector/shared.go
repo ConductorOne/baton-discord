@@ -1,9 +1,7 @@
 package connector
 
 import (
-	"fmt"
 	"github.com/bwmarrin/discordgo"
-	"time"
 )
 
 var guildPermissions = []int64{
@@ -102,6 +100,11 @@ var permNameFromVal = map[int64]string{
 	discordgo.PermissionModerateMembers:       "ModerateMembers",
 }
 
-func debugLog(s string) {
-	fmt.Printf("[%s] %s\n", time.Now().Format(time.DateTime), s)
+func contains[T comparable](slice []T, item T) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
 }

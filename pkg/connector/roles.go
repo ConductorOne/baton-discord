@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+
 	"github.com/bwmarrin/discordgo"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	"github.com/conductorone/baton-sdk/pkg/annotations"
@@ -11,7 +12,6 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/types/entitlement"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
 	"github.com/conductorone/baton-sdk/pkg/types/resource"
-	"slices"
 )
 
 var roleResourceTypeID = "role"
@@ -153,11 +153,7 @@ func (r *roleBuilder) getMembers(guildID string) (map[string]*discordgo.Member, 
 		}
 	}
 
-	user, ok := r.userCache[guildID]
-	if !ok {
-		return nil, errors.New("user not found")
-	}
-	return user, nil
+	return userCache, nil
 }
 
 func (r *roleBuilder) getRole(guildID string, roleID string) (*discordgo.Role, error) {
@@ -176,7 +172,7 @@ func (r *roleBuilder) getRole(guildID string, roleID string) (*discordgo.Role, e
 		}
 	}
 
-	role, ok := r.roleCache[guildID][roleID]
+	role, ok := roleCache[roleID]
 	if !ok {
 		return nil, errors.New("role not found")
 	}
@@ -199,7 +195,6 @@ func newRolePermissionGrant(resource *v2.Resource, guild *discordgo.Guild, role 
 func (r *roleBuilder) Grants(ctx context.Context, resource *v2.Resource, _ *pagination.Token) ([]*v2.Grant, string, annotations.Annotations, error) {
 	var grants []*v2.Grant
 
-	debugLog(fmt.Sprintf("roleBuilder.Grants: %+v", resource))
 	guildID := resource.ParentResourceId.Resource
 	guild, err := r.getGuild(guildID)
 	if err != nil {
@@ -240,7 +235,7 @@ func (r *roleBuilder) Grants(ctx context.Context, resource *v2.Resource, _ *pagi
 			return nil, "", nil, err
 		}
 
-		if !slices.Contains(member.Roles, resource.Id.Resource) {
+		if !contains(member.Roles, resource.Id.Resource) {
 			continue
 		}
 
