@@ -100,7 +100,7 @@ var permNameFromVal = map[int64]string{
 	discordgo.PermissionModerateMembers:       "ModerateMembers",
 }
 
-func Contains[T comparable](slice []T, item T) bool {
+func contains[T comparable](slice []T, item T) bool {
 	for _, s := range slice {
 		if s == item {
 			return true

@@ -239,7 +239,7 @@ func (r *roleBuilder) Grants(ctx context.Context, resource *v2.Resource, _ *pagi
 			return nil, "", nil, err
 		}
 
-		if !Contains(member.Roles, resource.Id.Resource) {
+		if !contains(member.Roles, resource.Id.Resource) {
 			continue
 		}
 
