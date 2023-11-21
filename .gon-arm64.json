@@ -1,6 +1,6 @@
 {
-  "source": ["./dist/macos-arm64_darwin_arm64/baton-aws"],
-  "bundle_id": "com.conductorone.baton.aws",
+  "source": ["./dist/macos-arm64_darwin_arm64/baton-discord"],
+  "bundle_id": "com.conductorone.baton.discord",
   "apple_id": {
     "username" : "justin.gallardo@conductorone.com",
     "password":  "@env:AC_PASSWORD"
@@ -9,6 +9,6 @@
     "application_identity": "Developer ID Application: Justin Gallardo (858DKH55XL)"
   },
   "zip" :{
-    "output_path":  "./dist/baton-aws-darwin-arm64.signed.zip"
+    "output_path":  "./dist/baton-discord-darwin-arm64.signed.zip"
   }
 }

@@ -1,20 +1,20 @@
-project_name: baton-aws
+project_name: baton-discord
 builds:
-  - binary: baton-aws
+  - binary: baton-discord
     env:
       - CGO_ENABLED=0
     id: linux
-    main: ./cmd/baton-aws
+    main: ./cmd/baton-discord
     goos:
       - linux
     goarch:
       - amd64
       - arm64
-  - binary: baton-aws
+  - binary: baton-discord
     env:
       - CGO_ENABLED=0
     id: macos-amd64
-    main: ./cmd/baton-aws
+    main: ./cmd/baton-discord
     goos:
       - darwin
     goarch:
@@ -22,12 +22,12 @@ builds:
     hooks:
       post:
         - gon .gon-amd64.json
-        - mv dist/baton-aws-darwin-amd64.signed.zip dist/macos-amd64_darwin_amd64_v1/baton-aws
-  - binary: baton-aws
+        - mv dist/baton-discord-darwin-amd64.signed.zip dist/macos-amd64_darwin_amd64_v1/baton-discord
+  - binary: baton-discord
     env:
       - CGO_ENABLED=0
     id: macos-arm64
-    main: ./cmd/baton-aws
+    main: ./cmd/baton-discord
     goos:
       - darwin
     goarch:
@@ -35,7 +35,7 @@ builds:
     hooks:
       post:
         - gon .gon-arm64.json
-        - mv dist/baton-aws-darwin-arm64.signed.zip dist/macos-arm64_darwin_arm64/baton-aws
+        - mv dist/baton-discord-darwin-arm64.signed.zip dist/macos-arm64_darwin_arm64/baton-discord
 archives:
   - id: linux-archive
     builds:
@@ -71,9 +71,9 @@ brews:
     folder: Formula
     homepage: https://conductorone.com
     test: |
-      system "#{bin}/baton-aws -v"
+      system "#{bin}/baton-discord -v"
     install: |-
-      bin.install "baton-aws"
+      bin.install "baton-discord"
 changelog:
   filters:
     exclude:
