@@ -239,7 +239,6 @@ func (c *channelBuilder) Grants(ctx context.Context, resource *v2.Resource, _ *p
 			}
 			grants = append(grants, roleGrants...)
 		}
-
 	}
 
 	return grants, "", nil, nil

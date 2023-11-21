@@ -90,7 +90,6 @@ func (o *guildBuilder) Grants(ctx context.Context, resource *v2.Resource, pToken
 	}
 
 	return grants, nextPageToken, nil, nil
-
 }
 
 func newGuildBuilder(s *discordgo.Session) *guildBuilder {

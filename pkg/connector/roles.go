@@ -153,11 +153,7 @@ func (r *roleBuilder) getMembers(guildID string) (map[string]*discordgo.Member, 
 		}
 	}
 
-	user, ok := r.userCache[guildID]
-	if !ok {
-		return nil, errors.New("user not found")
-	}
-	return user, nil
+	return userCache, nil
 }
 
 func (r *roleBuilder) getRole(guildID string, roleID string) (*discordgo.Role, error) {
@@ -176,7 +172,7 @@ func (r *roleBuilder) getRole(guildID string, roleID string) (*discordgo.Role, e
 		}
 	}
 
-	role, ok := r.roleCache[guildID][roleID]
+	role, ok := roleCache[roleID]
 	if !ok {
 		return nil, errors.New("role not found")
 	}
