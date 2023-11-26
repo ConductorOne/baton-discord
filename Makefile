@@ -11,7 +11,6 @@ endif
 .PHONY: build
 build:
 	go build -o ${OUTPUT_PATH} ./cmd/baton-discord
-	go build -o ${OUTPUT_PATH} ./cmd/baton-discord
 
 .PHONY: update-deps
 update-deps:
