@@ -260,3 +260,34 @@ func newRoleBuilder(s *discordgo.Session) *roleBuilder {
 		roleCache:  make(map[string]map[string]*discordgo.Role),
 	}
 }
+
+func (r *roleBuilder) Grant(ctx context.Context, principal *v2.Resource, entitlement *v2.Entitlement) (annotations.Annotations, error) {
+	if entitlement.Resource.Id.ResourceType != roleResourceTypeID {
+		return nil, errors.New("invalid resource type")
+	}
+	if entitlement.Resource.ParentResourceId.ResourceType != guildResourceTypeID {
+		return nil, errors.New("role has no guild parent")
+	}
+
+	return nil, r.conn.GuildMemberRoleAdd(
+		entitlement.Resource.ParentResourceId.Resource, // Guild
+		principal.Id.Resource,                          // User
+		entitlement.Resource.Id.Resource,               // Role
+	)
+}
+
+func (r *roleBuilder) Revoke(ctx context.Context, grant *v2.Grant) (annotations.Annotations, error) {
+	role := grant.Entitlement.Resource
+	if role.Id.ResourceType != roleResourceTypeID {
+		return nil, errors.New("invalid resource type")
+	}
+	if role.ParentResourceId.ResourceType != guildResourceTypeID {
+		return nil, errors.New("role has no guild parent")
+	}
+
+	return nil, r.conn.GuildMemberRoleRemove(
+		role.ParentResourceId.ResourceType, // Guild
+		grant.Principal.Id.Resource,        // User
+		role.Id.ResourceType,               // Role
+	)
+}
