@@ -286,8 +286,8 @@ func (r *roleBuilder) Revoke(ctx context.Context, grant *v2.Grant) (annotations.
 	}
 
 	return nil, r.conn.GuildMemberRoleRemove(
-		role.ParentResourceId.ResourceType, // Guild
-		grant.Principal.Id.Resource,        // User
-		role.Id.ResourceType,               // Role
+		role.ParentResourceId.Resource, // Guild
+		grant.Principal.Id.Resource,    // User
+		role.Id.Resource,               // Role
 	)
 }
