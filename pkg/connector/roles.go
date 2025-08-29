@@ -211,23 +211,26 @@ func (r *roleBuilder) Grants(ctx context.Context, resource *v2.Resource, _ *pagi
 		return nil, "", nil, err
 	}
 
-	for _, permission := range channelPermissions {
-		if discordRole.Permissions&permission != permission {
-			continue
-		}
-
-		role, err := newRolePermissionGrant(
-			resource,
-			guild,
-			discordRole,
-			permission,
-		)
-		if err != nil {
-			return nil, "", nil, err
-		}
-
-		grants = append(grants, role)
-	}
+	// Discord is kinda weird in that permissions themselves are kinda principals
+	// Permissions can be explicitly provided by a role, or forbidden by that role
+	// Until C1 handles non-human resource granting, let's just ignore this bit
+	//for _, permission := range channelPermissions {
+	//	if discordRole.Permissions&permission != permission {
+	//		continue
+	//	}
+	//
+	//	role, err := newRolePermissionGrant(
+	//		resource,
+	//		guild,
+	//		discordRole,
+	//		permission,
+	//	)
+	//	if err != nil {
+	//		return nil, "", nil, err
+	//	}
+	//
+	//	grants = append(grants, role)
+	//}
 
 	for _, member := range members {
 		userPrincipal, err := newMemberResource(member, guild)
