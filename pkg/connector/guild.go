@@ -134,6 +134,9 @@ func (o *guildBuilder) Grant(ctx context.Context, principal *v2.Resource, entitl
 		MaxUses: 1,
 		Unique:  true,
 	})
+	if err != nil {
+		return nil, err
+	}
 
 	dm, err := o.conn.UserChannelCreate(principal.Id.Resource)
 	if err != nil {

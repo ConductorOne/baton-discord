@@ -4,24 +4,24 @@ import (
 	"github.com/bwmarrin/discordgo"
 )
 
-var guildPermissions = []int64{
-	discordgo.PermissionManageEvents,
-	discordgo.PermissionManageGuildExpressions,
-	discordgo.PermissionManageNicknames,
-	discordgo.PermissionChangeNickname,
-	discordgo.PermissionManageRoles,
-	discordgo.PermissionCreateInstantInvite,
-	discordgo.PermissionKickMembers,
-	discordgo.PermissionBanMembers,
-	discordgo.PermissionAdministrator,
-	discordgo.PermissionManageChannels,
-	discordgo.PermissionManageGuild,
-	discordgo.PermissionAddReactions,
-	discordgo.PermissionViewAuditLogs,
-	discordgo.PermissionViewChannel,
-	discordgo.PermissionViewGuildInsights,
-	discordgo.PermissionModerateMembers,
-}
+// var guildPermissions = []int64{
+//	discordgo.PermissionManageEvents,
+//	discordgo.PermissionManageGuildExpressions,
+//	discordgo.PermissionManageNicknames,
+//	discordgo.PermissionChangeNickname,
+//	discordgo.PermissionManageRoles,
+//	discordgo.PermissionCreateInstantInvite,
+//	discordgo.PermissionKickMembers,
+//	discordgo.PermissionBanMembers,
+//	discordgo.PermissionAdministrator,
+//	discordgo.PermissionManageChannels,
+//	discordgo.PermissionManageGuild,
+//	discordgo.PermissionAddReactions,
+//	discordgo.PermissionViewAuditLogs,
+//	discordgo.PermissionViewChannel,
+//	discordgo.PermissionViewGuildInsights,
+//	discordgo.PermissionModerateMembers,
+// }
 
 var channelPermissions = append(textChannelPermissions, voiceChannelPermissions...)
 

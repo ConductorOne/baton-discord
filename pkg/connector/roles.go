@@ -89,7 +89,7 @@ func (r *roleBuilder) Entitlements(_ context.Context, resource *v2.Resource, _ *
 	// Discord is kinda weird in that permissions themselves are kinda principals
 	// Permissions can be explicitly provided by a role, or forbidden by that role
 	// Until C1 handles non-human resource granting, let's just ignore this bit
-	//for _, permission := range append(channelPermissions, guildPermissions...) {
+	// for _, permission := range append(channelPermissions, guildPermissions...) {
 	//	entitlements = append(
 	//		entitlements,
 	//		newRolePermissionEntitlement(
@@ -98,7 +98,7 @@ func (r *roleBuilder) Entitlements(_ context.Context, resource *v2.Resource, _ *
 	//			permission,
 	//		),
 	//	)
-	//}
+	// }
 
 	return entitlements, "", nil, nil
 }
@@ -218,7 +218,7 @@ func (r *roleBuilder) Grants(ctx context.Context, resource *v2.Resource, _ *pagi
 	// Discord is kinda weird in that permissions themselves are kinda principals
 	// Permissions can be explicitly provided by a role, or forbidden by that role
 	// Until C1 handles non-human resource granting, let's just ignore this bit
-	//for _, permission := range channelPermissions {
+	// for _, permission := range channelPermissions {
 	//	if discordRole.Permissions&permission != permission {
 	//		continue
 	//	}
@@ -234,7 +234,7 @@ func (r *roleBuilder) Grants(ctx context.Context, resource *v2.Resource, _ *pagi
 	//	}
 	//
 	//	grants = append(grants, role)
-	//}
+	// }
 
 	for _, member := range members {
 		userPrincipal, err := newMemberResource(member, guild)
