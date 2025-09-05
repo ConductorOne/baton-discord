@@ -34,13 +34,13 @@ var textChannelPermissions = []int64{
 	discordgo.PermissionReadMessageHistory,
 	discordgo.PermissionMentionEveryone,
 	discordgo.PermissionUseExternalEmojis,
-	discordgo.PermissionUseSlashCommands,
+	discordgo.PermissionUseApplicationCommands,
 	discordgo.PermissionManageThreads,
 	discordgo.PermissionCreatePublicThreads,
 	discordgo.PermissionCreatePrivateThreads,
 	discordgo.PermissionUseExternalStickers,
 	discordgo.PermissionSendMessagesInThreads,
-	discordgo.PermissionUseActivities,
+	discordgo.PermissionUseEmbeddedActivities,
 	discordgo.PermissionManageWebhooks,
 }
 

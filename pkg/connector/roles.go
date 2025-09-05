@@ -110,13 +110,14 @@ func newRoleAssignmentEntitlement(resource *v2.Resource, name string) *v2.Entitl
 		entitlement.WithGrantableTo(userResourceType),
 	)
 }
-func newRolePermissionEntitlement(resource *v2.Resource, name string, permission int64) *v2.Entitlement {
-	return entitlement.NewAssignmentEntitlement(
-		resource,
-		fmt.Sprintf("%s for %s", permNameFromVal[permission], name),
-		entitlement.WithGrantableTo(userResourceType),
-	)
-}
+
+// func newRolePermissionEntitlement(resource *v2.Resource, name string, permission int64) *v2.Entitlement {
+//	return entitlement.NewAssignmentEntitlement(
+//		resource,
+//		fmt.Sprintf("%s for %s", permNameFromVal[permission], name),
+//		entitlement.WithGrantableTo(userResourceType),
+//	)
+// }
 
 func (r *roleBuilder) getGuild(guildID string) (*discordgo.Guild, error) {
 	guild, ok := r.guildCache[guildID]
@@ -183,18 +184,18 @@ func (r *roleBuilder) getRole(guildID string, roleID string) (*discordgo.Role, e
 	return role, nil
 }
 
-func newRolePermissionGrant(resource *v2.Resource, guild *discordgo.Guild, role *discordgo.Role, permission int64) (*v2.Grant, error) {
-	rolePrincipal, err := newRoleResource(role, guild)
-	if err != nil {
-		return nil, err
-	}
-
-	return grant.NewGrant(
-		resource,
-		newRolePermissionEntitlement(resource, role.Name, permission).DisplayName,
-		rolePrincipal,
-	), nil
-}
+// func newRolePermissionGrant(resource *v2.Resource, guild *discordgo.Guild, role *discordgo.Role, permission int64) (*v2.Grant, error) {
+//	rolePrincipal, err := newRoleResource(role, guild)
+//	if err != nil {
+//		return nil, err
+//	}
+//
+//	return grant.NewGrant(
+//		resource,
+//		newRolePermissionEntitlement(resource, role.Name, permission).DisplayName,
+//		rolePrincipal,
+//	), nil
+// }
 
 func (r *roleBuilder) Grants(ctx context.Context, resource *v2.Resource, _ *pagination.Token) ([]*v2.Grant, string, annotations.Annotations, error) {
 	var grants []*v2.Grant
