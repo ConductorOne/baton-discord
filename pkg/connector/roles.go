@@ -85,16 +85,20 @@ func (r *roleBuilder) Entitlements(_ context.Context, resource *v2.Resource, _ *
 	entitlements := []*v2.Entitlement{
 		newRoleAssignmentEntitlement(resource, role.Name),
 	}
-	for _, permission := range append(channelPermissions, guildPermissions...) {
-		entitlements = append(
-			entitlements,
-			newRolePermissionEntitlement(
-				resource,
-				role.Name,
-				permission,
-			),
-		)
-	}
+
+	// Discord is kinda weird in that permissions themselves are kinda principals
+	// Permissions can be explicitly provided by a role, or forbidden by that role
+	// Until C1 handles non-human resource granting, let's just ignore this bit
+	// for _, permission := range append(channelPermissions, guildPermissions...) {
+	//	entitlements = append(
+	//		entitlements,
+	//		newRolePermissionEntitlement(
+	//			resource,
+	//			role.Name,
+	//			permission,
+	//		),
+	//	)
+	// }
 
 	return entitlements, "", nil, nil
 }
@@ -106,13 +110,14 @@ func newRoleAssignmentEntitlement(resource *v2.Resource, name string) *v2.Entitl
 		entitlement.WithGrantableTo(userResourceType),
 	)
 }
-func newRolePermissionEntitlement(resource *v2.Resource, name string, permission int64) *v2.Entitlement {
-	return entitlement.NewAssignmentEntitlement(
-		resource,
-		fmt.Sprintf("%s for %s", permNameFromVal[permission], name),
-		entitlement.WithGrantableTo(userResourceType),
-	)
-}
+
+// func newRolePermissionEntitlement(resource *v2.Resource, name string, permission int64) *v2.Entitlement {
+//	return entitlement.NewAssignmentEntitlement(
+//		resource,
+//		fmt.Sprintf("%s for %s", permNameFromVal[permission], name),
+//		entitlement.WithGrantableTo(userResourceType),
+//	)
+// }
 
 func (r *roleBuilder) getGuild(guildID string) (*discordgo.Guild, error) {
 	guild, ok := r.guildCache[guildID]
@@ -179,18 +184,18 @@ func (r *roleBuilder) getRole(guildID string, roleID string) (*discordgo.Role, e
 	return role, nil
 }
 
-func newRolePermissionGrant(resource *v2.Resource, guild *discordgo.Guild, role *discordgo.Role, permission int64) (*v2.Grant, error) {
-	rolePrincipal, err := newRoleResource(role, guild)
-	if err != nil {
-		return nil, err
-	}
-
-	return grant.NewGrant(
-		resource,
-		newRolePermissionEntitlement(resource, role.Name, permission).DisplayName,
-		rolePrincipal,
-	), nil
-}
+// func newRolePermissionGrant(resource *v2.Resource, guild *discordgo.Guild, role *discordgo.Role, permission int64) (*v2.Grant, error) {
+//	rolePrincipal, err := newRoleResource(role, guild)
+//	if err != nil {
+//		return nil, err
+//	}
+//
+//	return grant.NewGrant(
+//		resource,
+//		newRolePermissionEntitlement(resource, role.Name, permission).DisplayName,
+//		rolePrincipal,
+//	), nil
+// }
 
 func (r *roleBuilder) Grants(ctx context.Context, resource *v2.Resource, _ *pagination.Token) ([]*v2.Grant, string, annotations.Annotations, error) {
 	var grants []*v2.Grant
@@ -211,23 +216,26 @@ func (r *roleBuilder) Grants(ctx context.Context, resource *v2.Resource, _ *pagi
 		return nil, "", nil, err
 	}
 
-	for _, permission := range channelPermissions {
-		if discordRole.Permissions&permission != permission {
-			continue
-		}
-
-		role, err := newRolePermissionGrant(
-			resource,
-			guild,
-			discordRole,
-			permission,
-		)
-		if err != nil {
-			return nil, "", nil, err
-		}
-
-		grants = append(grants, role)
-	}
+	// Discord is kinda weird in that permissions themselves are kinda principals
+	// Permissions can be explicitly provided by a role, or forbidden by that role
+	// Until C1 handles non-human resource granting, let's just ignore this bit
+	// for _, permission := range channelPermissions {
+	//	if discordRole.Permissions&permission != permission {
+	//		continue
+	//	}
+	//
+	//	role, err := newRolePermissionGrant(
+	//		resource,
+	//		guild,
+	//		discordRole,
+	//		permission,
+	//	)
+	//	if err != nil {
+	//		return nil, "", nil, err
+	//	}
+	//
+	//	grants = append(grants, role)
+	// }
 
 	for _, member := range members {
 		userPrincipal, err := newMemberResource(member, guild)
@@ -259,4 +267,35 @@ func newRoleBuilder(s *discordgo.Session) *roleBuilder {
 		userCache:  make(map[string]map[string]*discordgo.Member),
 		roleCache:  make(map[string]map[string]*discordgo.Role),
 	}
+}
+
+func (r *roleBuilder) Grant(ctx context.Context, principal *v2.Resource, entitlement *v2.Entitlement) (annotations.Annotations, error) {
+	if entitlement.Resource.Id.ResourceType != roleResourceTypeID {
+		return nil, errors.New("invalid resource type")
+	}
+	if entitlement.Resource.ParentResourceId.ResourceType != guildResourceTypeID {
+		return nil, errors.New("role has no guild parent")
+	}
+
+	return nil, r.conn.GuildMemberRoleAdd(
+		entitlement.Resource.ParentResourceId.Resource, // Guild
+		principal.Id.Resource,                          // User
+		entitlement.Resource.Id.Resource,               // Role
+	)
+}
+
+func (r *roleBuilder) Revoke(ctx context.Context, grant *v2.Grant) (annotations.Annotations, error) {
+	role := grant.Entitlement.Resource
+	if role.Id.ResourceType != roleResourceTypeID {
+		return nil, errors.New("invalid resource type")
+	}
+	if role.ParentResourceId.ResourceType != guildResourceTypeID {
+		return nil, errors.New("role has no guild parent")
+	}
+
+	return nil, r.conn.GuildMemberRoleRemove(
+		role.ParentResourceId.Resource, // Guild
+		grant.Principal.Id.Resource,    // User
+		role.Id.Resource,               // Role
+	)
 }

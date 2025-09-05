@@ -12,10 +12,18 @@ import (
 )
 
 func loadC1z(filePath string, tmpDir string) (string, error) {
+	var err error
 	workingDir, err := os.MkdirTemp(tmpDir, "c1z")
 	if err != nil {
 		return "", err
 	}
+	defer func() {
+		if err != nil {
+			if removeErr := os.RemoveAll(workingDir); removeErr != nil {
+				err = errors.Join(err, removeErr)
+			}
+		}
+	}()
 	dbFilePath := filepath.Join(workingDir, "db")
 	dbFile, err := os.Create(dbFilePath)
 	if err != nil {
@@ -60,12 +68,6 @@ func saveC1z(dbFilePath string, outputFilePath string) error {
 		err = dbFile.Close()
 		if err != nil {
 			zap.L().Error("failed to close db file", zap.Error(err))
-		}
-
-		// Cleanup the database filepath. This should always be a file within a temp directory, so we remove the entire dir.
-		err = os.RemoveAll(filepath.Dir(dbFilePath))
-		if err != nil {
-			zap.L().Error("failed to remove db dir", zap.Error(err))
 		}
 	}()
 
