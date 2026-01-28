@@ -22,7 +22,7 @@ func main() {
 	ctx := context.Background()
 
 	_, cmd, err := configschema.DefineConfiguration(ctx, "baton-discord", getConnector, config.Config,
-		connectorrunner.WithDefaultCapabilitiesConnectorBuilder(&connector.Connector{}),
+		connectorrunner.WithDefaultCapabilitiesConnectorBuilder(&connector.Discord{}),
 	)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

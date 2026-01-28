@@ -12,12 +12,12 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/connectorbuilder"
 )
 
-type Connector struct {
+type Discord struct {
 	conn *discordgo.Session
 }
 
 // ResourceSyncers returns a ResourceSyncer for each resource type that should be synced from the upstream service.
-func (d *Connector) ResourceSyncers(ctx context.Context) []connectorbuilder.ResourceSyncer {
+func (d *Discord) ResourceSyncers(ctx context.Context) []connectorbuilder.ResourceSyncer {
 	return []connectorbuilder.ResourceSyncer{
 		newUserBuilder(d.conn),
 		newGuildBuilder(d.conn),
@@ -28,12 +28,12 @@ func (d *Connector) ResourceSyncers(ctx context.Context) []connectorbuilder.Reso
 
 // Asset takes an input AssetRef and attempts to fetch it using the connector's authenticated http client
 // It streams a response, always starting with a metadata object, following by chunked payloads for the asset.
-func (d *Connector) Asset(ctx context.Context, asset *v2.AssetRef) (string, io.ReadCloser, error) {
+func (d *Discord) Asset(ctx context.Context, asset *v2.AssetRef) (string, io.ReadCloser, error) {
 	return "", nil, nil
 }
 
 // Metadata returns metadata about the connector.
-func (d *Connector) Metadata(ctx context.Context) (*v2.ConnectorMetadata, error) {
+func (d *Discord) Metadata(ctx context.Context) (*v2.ConnectorMetadata, error) {
 	return &v2.ConnectorMetadata{
 		DisplayName: "Discord Baton Connector",
 		Description: "An implementation of a Discord connector using Baton.",
@@ -42,12 +42,12 @@ func (d *Connector) Metadata(ctx context.Context) (*v2.ConnectorMetadata, error)
 
 // Validate is called to ensure that the connector is properly configured. It should exercise any API credentials
 // to be sure that they are valid.
-func (d *Connector) Validate(ctx context.Context) (annotations.Annotations, error) {
+func (d *Discord) Validate(ctx context.Context) (annotations.Annotations, error) {
 	return nil, nil
 }
 
 // New returns a new instance of the connector.
-func New(ctx context.Context, token string) (*Connector, error) {
+func New(ctx context.Context, token string) (*Discord, error) {
 	dcConn, err := discordgo.New(fmt.Sprintf("Bot %s", token))
 	if err != nil {
 		return nil, err
@@ -58,5 +58,5 @@ func New(ctx context.Context, token string) (*Connector, error) {
 		return nil, err
 	}
 
-	return &Connector{conn: dcConn}, nil
+	return &Discord{conn: dcConn}, nil
 }
