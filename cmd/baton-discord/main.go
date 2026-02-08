@@ -8,11 +8,11 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/connectorbuilder"
 	"github.com/conductorone/baton-sdk/pkg/types"
 	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
-	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"go.uber.org/zap"
 
 	"github.com/ConductorOne/baton-discord/pkg/connector"
+	cfg "github.com/ConductorOne/baton-discord/pkg/config"
 	configschema "github.com/conductorone/baton-sdk/pkg/config"
 )
 
@@ -21,14 +21,13 @@ var version = "dev"
 func main() {
 	ctx := context.Background()
 
-	_, cmd, err := configschema.DefineConfiguration(ctx, "baton-discord", getConnector, configuration)
+	_, cmd, err := configschema.DefineConfiguration(ctx, "baton-discord", getConnector, cfg.Configuration)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 
 	cmd.Version = version
-	cmdFlags(cmd)
 	err = cmd.Execute()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())
@@ -39,7 +38,7 @@ func main() {
 func getConnector(ctx context.Context, v *viper.Viper) (types.ConnectorServer, error) {
 	l := ctxzap.Extract(ctx)
 
-	cb, err := connector.New(ctx, v.GetString("token"))
+	cb, err := connector.New(ctx, v.GetString("token"), v.GetString("base-url"))
 	if err != nil {
 		l.Error("error creating connector", zap.Error(err))
 		return nil, err
@@ -52,8 +51,4 @@ func getConnector(ctx context.Context, v *viper.Viper) (types.ConnectorServer, e
 	}
 
 	return c, nil
-}
-
-func cmdFlags(cmd *cobra.Command) {
-	cmd.PersistentFlags().String("token", "", "The discord bot token. ($BATON_TOKEN)")
 }
