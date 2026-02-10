@@ -1,6 +1,6 @@
 ![Baton Logo](./docs/images/baton-logo.png)
 
-# `baton-discord` [![Go Reference](https://pkg.go.dev/badge/github.com/conductorone/baton-discord.svg)](https://pkg.go.dev/github.com/conductorone/baton-discord) ![main ci](https://github.com/conductorone/baton-discord/actions/workflows/main.yaml/badge.svg)
+# `baton-discord` [![Go Reference](https://pkg.go.dev/badge/github.com/conductorone/baton-discord.svg)](https://pkg.go.dev/github.com/conductorone/baton-discord) ![ci](https://github.com/conductorone/baton-discord/actions/workflows/ci.yaml/badge.svg)
 
 `baton-discord` is a connector for discord built using the [Baton SDK](https://github.com/conductorone/baton-sdk). It communicates with the discord API to sync data about which roles and users have access to guilds and channels that your DiscordBot is a member of.
 
@@ -29,7 +29,7 @@ docker run --rm -v $(pwd):/out ghcr.io/conductorone/baton:latest -f "/out/sync.c
 go install github.com/conductorone/baton/cmd/baton@main
 go install github.com/conductorone/baton-discord/cmd/baton-discord@main
 
-BATON_TOKEN=discordAppToken 
+BATON_TOKEN=discordAppToken
 baton resources
 ```
 
