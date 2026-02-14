@@ -18,6 +18,7 @@ var (
 		"base-url",
 		field.WithDisplayName("Base URL"),
 		field.WithDescription("Override the Discord API URL (for testing)"),
+		field.WithHidden(true),
 	)
 
 	// ConfigurationFields defines the external configuration required for the
