@@ -11,8 +11,8 @@ import (
 	"github.com/spf13/viper"
 	"go.uber.org/zap"
 
-	"github.com/ConductorOne/baton-discord/pkg/connector"
 	cfg "github.com/ConductorOne/baton-discord/pkg/config"
+	"github.com/ConductorOne/baton-discord/pkg/connector"
 	configschema "github.com/conductorone/baton-sdk/pkg/config"
 )
 

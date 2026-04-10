@@ -1,8 +1,8 @@
 package main
 
 import (
-	"github.com/conductorone/baton-sdk/pkg/config"
 	cfg "github.com/ConductorOne/baton-discord/pkg/config"
+	"github.com/conductorone/baton-sdk/pkg/config"
 )
 
 func main() {
