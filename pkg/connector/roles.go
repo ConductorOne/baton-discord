@@ -2,300 +2,257 @@ package connector
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"slices"
 
-	"github.com/bwmarrin/discordgo"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	"github.com/conductorone/baton-sdk/pkg/annotations"
-	"github.com/conductorone/baton-sdk/pkg/pagination"
+
 	"github.com/conductorone/baton-sdk/pkg/types/entitlement"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
-	"github.com/conductorone/baton-sdk/pkg/types/resource"
+	resource_sdk "github.com/conductorone/baton-sdk/pkg/types/resource"
+
+	"github.com/disgoorg/snowflake/v2"
+
+	"github.com/ConductorOne/baton-discord/pkg/client"
 )
 
-var roleResourceTypeID = "role"
+const roleResourceTypeID = "role"
 
 var roleResourceType = &v2.ResourceType{
 	Id:          roleResourceTypeID,
 	DisplayName: "Role",
+	Description: "A role within a Discord server.",
 	Traits:      []v2.ResourceType_Trait{v2.ResourceType_TRAIT_ROLE},
 }
 
 type roleBuilder struct {
-	conn *discordgo.Session
+	client *client.Client
+}
 
-	guildCache map[string]*discordgo.Guild
-	userCache  map[string]map[string]*discordgo.Member
-	roleCache  map[string]map[string]*discordgo.Role
+func newRoleBuilder(c *client.Client) *roleBuilder {
+	return &roleBuilder{client: c}
 }
 
 func (r *roleBuilder) ResourceType(ctx context.Context) *v2.ResourceType {
 	return roleResourceType
 }
 
-func newRoleResource(role *discordgo.Role, guild *discordgo.Guild) (*v2.Resource, error) {
-	guildResource, err := resource.NewResourceID(guildResourceType, guild.ID)
-	if err != nil {
-		return nil, err
-	}
-
-	group, err := resource.NewRoleResource(
-		role.Name,
-		roleResourceType,
-		role.ID,
-		nil,
-		resource.WithParentResourceID(guildResource),
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	return group, nil
-}
-
-// List returns all the guilds from the database as resource objects.
-func (r *roleBuilder) List(ctx context.Context, parentResourceID *v2.ResourceId, pToken *pagination.Token) ([]*v2.Resource, string, annotations.Annotations, error) {
-	resources := []*v2.Resource{}
-
-	for _, guild := range r.conn.State.Guilds {
-		roles, err := r.conn.GuildRoles(guild.ID)
-		if err != nil {
-			return nil, "", nil, err
-		}
-
-		for _, role := range roles {
-			group, err := newRoleResource(role, guild)
-			if err != nil {
-				return nil, "", nil, err
-			}
-			resources = append(resources, group)
-		}
-	}
-
-	return resources, "", nil, nil
-}
-
-func (r *roleBuilder) Entitlements(_ context.Context, resource *v2.Resource, _ *pagination.Token) ([]*v2.Entitlement, string, annotations.Annotations, error) {
-	role, err := r.getRole(resource.ParentResourceId.Resource, resource.Id.Resource)
-	if err != nil {
-		return nil, "", nil, fmt.Errorf("role not found: %w", err)
-	}
-
-	entitlements := []*v2.Entitlement{
-		newRoleAssignmentEntitlement(resource, role.Name),
-	}
-
-	// Discord is kinda weird in that permissions themselves are kinda principals
-	// Permissions can be explicitly provided by a role, or forbidden by that role
-	// Until C1 handles non-human resource granting, let's just ignore this bit
-	// for _, permission := range append(channelPermissions, guildPermissions...) {
-	//	entitlements = append(
-	//		entitlements,
-	//		newRolePermissionEntitlement(
-	//			resource,
-	//			role.Name,
-	//			permission,
-	//		),
-	//	)
-	// }
-
-	return entitlements, "", nil, nil
-}
-
-func newRoleAssignmentEntitlement(resource *v2.Resource, name string) *v2.Entitlement {
-	return entitlement.NewAssignmentEntitlement(
-		resource,
-		fmt.Sprintf("Member of %s", name),
-		entitlement.WithGrantableTo(userResourceType),
-	)
-}
-
-// func newRolePermissionEntitlement(resource *v2.Resource, name string, permission int64) *v2.Entitlement {
-//	return entitlement.NewAssignmentEntitlement(
-//		resource,
-//		fmt.Sprintf("%s for %s", permNameFromVal[permission], name),
-//		entitlement.WithGrantableTo(userResourceType),
-//	)
-// }
-
-func (r *roleBuilder) getGuild(guildID string) (*discordgo.Guild, error) {
-	guild, ok := r.guildCache[guildID]
-	if !ok {
-		var err error
-		guild, err = r.conn.Guild(guildID)
-		if err != nil {
-			return nil, err
-		}
-		r.guildCache[guildID] = guild
-	}
-
-	return guild, nil
-}
-
-func (r *roleBuilder) getMembers(guildID string) (map[string]*discordgo.Member, error) {
-	userCache, ok := r.userCache[guildID]
-	if !ok {
-		userCache = make(map[string]*discordgo.Member)
-		r.userCache[guildID] = userCache
-
-		token := ""
-		for {
-			guildMembers, err := r.conn.GuildMembers(guildID, token, 1000)
-			if err != nil {
-				return nil, err
-			}
-
-			if len(guildMembers) == 0 {
-				break
-			}
-
-			for _, member := range guildMembers {
-				userCache[member.User.ID] = member
-			}
-
-			token = guildMembers[len(guildMembers)-1].User.ID
-		}
-	}
-
-	return userCache, nil
-}
-
-func (r *roleBuilder) getRole(guildID string, roleID string) (*discordgo.Role, error) {
-	roleCache, ok := r.roleCache[guildID]
-	if !ok {
-		roleCache = make(map[string]*discordgo.Role)
-		r.roleCache[guildID] = roleCache
-
-		roles, err := r.conn.GuildRoles(guildID)
-		if err != nil {
-			return nil, err
-		}
-
-		for _, role := range roles {
-			roleCache[role.ID] = role
-		}
-	}
-
-	role, ok := roleCache[roleID]
-	if !ok {
-		return nil, errors.New("role not found")
-	}
-	return role, nil
-}
-
-// func newRolePermissionGrant(resource *v2.Resource, guild *discordgo.Guild, role *discordgo.Role, permission int64) (*v2.Grant, error) {
-//	rolePrincipal, err := newRoleResource(role, guild)
-//	if err != nil {
-//		return nil, err
-//	}
+// isEveryoneRole reports whether a role is the server's @everyone role.
 //
-//	return grant.NewGrant(
-//		resource,
-//		newRolePermissionEntitlement(resource, role.Name, permission).DisplayName,
-//		rolePrincipal,
-//	), nil
-// }
+// Discord gives @everyone the same snowflake as the server itself, and every
+// member holds it implicitly — it never appears in a member's Roles list.
+func isEveryoneRole(roleID, guildID string) bool {
+	return roleID == guildID
+}
 
-func (r *roleBuilder) Grants(ctx context.Context, resource *v2.Resource, _ *pagination.Token) ([]*v2.Grant, string, annotations.Annotations, error) {
-	var grants []*v2.Grant
-
-	guildID := resource.ParentResourceId.Resource
-	guild, err := r.getGuild(guildID)
-	if err != nil {
-		return nil, "", nil, err
+// List returns the roles of one server. Discord returns this collection whole,
+// so there is nothing to paginate.
+func (r *roleBuilder) List(
+	ctx context.Context,
+	parentResourceID *v2.ResourceId,
+	_ resource_sdk.SyncOpAttrs,
+) ([]*v2.Resource, *resource_sdk.SyncOpResults, error) {
+	// Roles are only reachable through a server; see the note in userBuilder.List.
+	if parentResourceID == nil {
+		return nil, nil, nil
 	}
 
-	members, err := r.getMembers(guild.ID)
+	guildID := parentResourceID.Resource
+	guildResourceID, err := resource_sdk.NewResourceID(guildResourceType, guildID)
 	if err != nil {
-		return nil, "", nil, err
+		return nil, nil, err
 	}
 
-	discordRole, err := r.getRole(guildID, resource.Id.Resource)
+	roles, err := r.client.Roles(ctx, guildID)
 	if err != nil {
-		return nil, "", nil, err
+		return nil, nil, err
 	}
 
-	// Discord is kinda weird in that permissions themselves are kinda principals
-	// Permissions can be explicitly provided by a role, or forbidden by that role
-	// Until C1 handles non-human resource granting, let's just ignore this bit
-	// for _, permission := range channelPermissions {
-	//	if discordRole.Permissions&permission != permission {
-	//		continue
-	//	}
-	//
-	//	role, err := newRolePermissionGrant(
-	//		resource,
-	//		guild,
-	//		discordRole,
-	//		permission,
-	//	)
-	//	if err != nil {
-	//		return nil, "", nil, err
-	//	}
-	//
-	//	grants = append(grants, role)
-	// }
-
-	for _, member := range members {
-		userPrincipal, err := newMemberResource(member, guild)
-		if err != nil {
-			return nil, "", nil, err
+	resources := make([]*v2.Resource, 0, len(roles))
+	for _, role := range roles {
+		profile := map[string]any{
+			"role_id":         role.ID.String(),
+			profileKeyGuildID: guildID,
+			"position":        role.Position,
+			// Integration-managed roles are owned by a bot or subscription and
+			// cannot be assigned or removed through the API.
+			"managed": role.Managed,
+			// The role's server-wide permission bitmask. Kept as a string:
+			// Discord permissions exceed 2^31 and formatting the int64 with a
+			// float verb would render large values in scientific notation.
+			"permissions": fmt.Sprintf("%d", role.Permissions),
 		}
 
-		if !contains(member.Roles, resource.Id.Resource) {
+		roleResource, err := resource_sdk.NewRoleResource(
+			role.Name,
+			roleResourceType,
+			role.ID.String(),
+			nil,
+			resource_sdk.WithParentResourceID(guildResourceID),
+			resource_sdk.WithExternalID(&v2.ExternalId{Id: role.ID.String()}),
+			resource_sdk.WithResourceProfile(profile),
+		)
+		if err != nil {
+			return nil, nil, err
+		}
+		resources = append(resources, roleResource)
+	}
+
+	return resources, nil, nil
+}
+
+// Entitlements returns the single assignment entitlement for a role.
+//
+// Note that no API call is needed. The previous implementation fetched the role
+// purely to build a display-name-derived slug; with a stable slug the role
+// resource already carries everything required.
+func (r *roleBuilder) Entitlements(
+	_ context.Context,
+	resource *v2.Resource,
+	_ resource_sdk.SyncOpAttrs,
+) ([]*v2.Entitlement, *resource_sdk.SyncOpResults, error) {
+	return []*v2.Entitlement{
+		entitlement.NewAssignmentEntitlement(
+			resource,
+			roleMemberEntitlement,
+			entitlement.WithDisplayName(fmt.Sprintf("%s Role Member", resource.DisplayName)),
+			entitlement.WithDescription(fmt.Sprintf("Assigned the %s role in Discord", resource.DisplayName)),
+			entitlement.WithGrantableTo(userResourceType),
+		),
+	}, nil, nil
+}
+
+// Grants returns the members holding a role, a page at a time.
+//
+// Discord has no "members with role X" endpoint, so this pages the server's
+// members and filters locally. Paging rather than caching every member of the
+// server is deliberate: the previous implementation held every member of every
+// synced server in memory for the life of the process, which is unbounded in
+// server size.
+func (r *roleBuilder) Grants(
+	ctx context.Context,
+	resource *v2.Resource,
+	opts resource_sdk.SyncOpAttrs,
+) ([]*v2.Grant, *resource_sdk.SyncOpResults, error) {
+	guildID, err := parentGuildID(resource)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	bag, err := parsePageToken(opts.PageToken.Token, roleResourceTypeID)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	members, nextCursor, err := r.client.MembersPage(ctx, guildID, bag.PageToken())
+	if err != nil {
+		return nil, nil, err
+	}
+
+	roleID := resource.Id.Resource
+	everyone := isEveryoneRole(roleID, guildID)
+
+	var grants []*v2.Grant
+	for _, member := range members {
+		if !everyone && !memberHasRole(member.RoleIDs, roleID) {
 			continue
 		}
 
-		grants = append(
-			grants,
-			grant.NewGrant(
-				resource,
-				newRoleAssignmentEntitlement(resource, discordRole.Name).DisplayName,
-				userPrincipal,
-			),
-		)
+		principal, err := newMemberResource(member, guildID)
+		if err != nil {
+			return nil, nil, err
+		}
+		grants = append(grants, grant.NewGrant(resource, roleMemberEntitlement, principal))
 	}
 
-	return grants, "", nil, nil
+	nextPage, err := bag.NextToken(nextCursor)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return grants, syncResults(nextPage), nil
 }
 
-func newRoleBuilder(s *discordgo.Session) *roleBuilder {
-	return &roleBuilder{
-		conn:       s,
-		guildCache: make(map[string]*discordgo.Guild),
-		userCache:  make(map[string]map[string]*discordgo.Member),
-		roleCache:  make(map[string]map[string]*discordgo.Role),
-	}
+func memberHasRole(roleIDs []snowflake.ID, roleID string) bool {
+	return slices.ContainsFunc(roleIDs, func(id snowflake.ID) bool {
+		return id.String() == roleID
+	})
 }
 
-func (r *roleBuilder) Grant(ctx context.Context, principal *v2.Resource, entitlement *v2.Entitlement) (annotations.Annotations, error) {
-	if entitlement.Resource.Id.ResourceType != roleResourceTypeID {
-		return nil, errors.New("invalid resource type")
+// Grant assigns a role to a member.
+func (r *roleBuilder) Grant(
+	ctx context.Context,
+	principal *v2.Resource,
+	ent *v2.Entitlement,
+) ([]*v2.Grant, annotations.Annotations, error) {
+	if err := requireEntitlementSlug(ent, roleMemberEntitlement); err != nil {
+		return nil, nil, err
 	}
-	if entitlement.Resource.ParentResourceId.ResourceType != guildResourceTypeID {
-		return nil, errors.New("role has no guild parent")
+	if err := requireResourceType(ent.Resource, roleResourceTypeID); err != nil {
+		return nil, nil, err
+	}
+	if err := requireResourceType(principal, userResourceTypeID); err != nil {
+		return nil, nil, err
 	}
 
-	return nil, r.conn.GuildMemberRoleAdd(
-		entitlement.Resource.ParentResourceId.Resource, // Guild
-		principal.Id.Resource,                          // User
-		entitlement.Resource.Id.Resource,               // Role
-	)
+	guildID, err := guildIDForProvisioning(ent.Resource, principal)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	roleID := ent.Resource.Id.Resource
+	if isEveryoneRole(roleID, guildID) {
+		return nil, nil, fmt.Errorf(
+			"baton-discord: the @everyone role is held implicitly by all members and cannot be assigned")
+	}
+
+	err = r.client.AddMemberRole(ctx, guildID, principal.Id.Resource, roleID,
+		"Role granted by ConductorOne")
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Adding a role the member already holds answers 204, so the operation is
+	// idempotent and needs no already-exists special case.
+	//
+	// Returning the grant lets C1 record the new access immediately instead of
+	// waiting for the next sync to discover it. The ID matches what the sync
+	// path emits, so the two cannot disagree.
+	return []*v2.Grant{
+		grant.NewGrant(ent.Resource, roleMemberEntitlement, principal),
+	}, nil, nil
 }
 
-func (r *roleBuilder) Revoke(ctx context.Context, grant *v2.Grant) (annotations.Annotations, error) {
-	role := grant.Entitlement.Resource
-	if role.Id.ResourceType != roleResourceTypeID {
-		return nil, errors.New("invalid resource type")
+// Revoke removes a role from a member.
+func (r *roleBuilder) Revoke(ctx context.Context, g *v2.Grant) (annotations.Annotations, error) {
+	if err := requireEntitlementSlug(g.Entitlement, roleMemberEntitlement); err != nil {
+		return nil, err
 	}
-	if role.ParentResourceId.ResourceType != guildResourceTypeID {
-		return nil, errors.New("role has no guild parent")
+	if err := requireResourceType(g.Entitlement.Resource, roleResourceTypeID); err != nil {
+		return nil, err
 	}
 
-	return nil, r.conn.GuildMemberRoleRemove(
-		role.ParentResourceId.Resource, // Guild
-		grant.Principal.Id.Resource,    // User
-		role.Id.Resource,               // Role
-	)
+	guildID, err := guildIDForProvisioning(g.Entitlement.Resource, g.Principal)
+	if err != nil {
+		return nil, err
+	}
+
+	roleID := g.Entitlement.Resource.Id.Resource
+	if isEveryoneRole(roleID, guildID) {
+		return nil, fmt.Errorf(
+			"baton-discord: the @everyone role is held implicitly by all members and cannot be removed")
+	}
+
+	err = r.client.RemoveMemberRole(ctx, guildID, g.Principal.Id.Resource, roleID,
+		"Role revoked by ConductorOne")
+	if err != nil {
+		// The member or the assignment already being gone is the desired end state.
+		if client.IsNotFound(err) {
+			return annotations.New(&v2.GrantAlreadyRevoked{}), nil
+		}
+		return nil, err
+	}
+
+	return nil, nil
 }
