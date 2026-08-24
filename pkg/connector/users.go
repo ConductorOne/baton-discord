@@ -2,109 +2,177 @@ package connector
 
 import (
 	"context"
+	"fmt"
 
-	"github.com/bwmarrin/discordgo"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
-	"github.com/conductorone/baton-sdk/pkg/annotations"
-	"github.com/conductorone/baton-sdk/pkg/pagination"
+	"github.com/disgoorg/disgo/discord"
+
 	resource_sdk "github.com/conductorone/baton-sdk/pkg/types/resource"
+
+	"github.com/ConductorOne/baton-discord/pkg/client"
 )
 
-var userResourceTypeID = "user"
+const userResourceTypeID = "user"
 
-// The user resource type is for all user objects from the database.
 var userResourceType = &v2.ResourceType{
 	Id:          userResourceTypeID,
 	DisplayName: "User",
+	Description: "A Discord account that is a member of a synced server.",
 	Traits:      []v2.ResourceType_Trait{v2.ResourceType_TRAIT_USER},
 }
 
 type userBuilder struct {
-	conn *discordgo.Session
+	client *client.Client
 }
 
-func newMemberResource(user *discordgo.Member, guild *discordgo.Guild) (*v2.Resource, error) {
-	guildResource, err := resource_sdk.NewResourceID(guildResourceType, guild.ID)
-	if err != nil {
-		return nil, err
-	}
-
-	options := []resource_sdk.UserTraitOption{}
-	if user.User.Bot {
-		options = append(options, resource_sdk.WithAccountType(v2.UserTrait_ACCOUNT_TYPE_SERVICE))
-	} else {
-		options = append(options, resource_sdk.WithAccountType(v2.UserTrait_ACCOUNT_TYPE_HUMAN))
-	}
-
-	name := user.Nick
-	if name == "" {
-		name = user.User.Username
-	}
-
-	return resource_sdk.NewUserResource(
-		name,
-		userResourceType,
-		user.User.ID,
-		options,
-		resource_sdk.WithParentResourceID(guildResource),
-		resource_sdk.WithUserTrait(
-			resource_sdk.WithUserLogin(user.User.Username),
-		),
-	)
+func newUserBuilder(c *client.Client) *userBuilder {
+	return &userBuilder{client: c}
 }
 
 func (o *userBuilder) ResourceType(ctx context.Context) *v2.ResourceType {
 	return userResourceType
 }
 
-// List returns all the users from the database as resource objects.
-// Users include a UserTrait because they are the 'shape' of a standard user.
-func (o *userBuilder) List(ctx context.Context, parentResourceID *v2.ResourceId, _ *pagination.Token) ([]*v2.Resource, string, annotations.Annotations, error) {
-	resources := []*v2.Resource{}
+// memberDisplayName mirrors Discord's own precedence: the server nickname, then
+// the account's display name, then its username.
+func memberDisplayName(member discord.Member) string {
+	if member.Nick != nil && *member.Nick != "" {
+		return *member.Nick
+	}
+	if member.User.GlobalName != nil && *member.User.GlobalName != "" {
+		return *member.User.GlobalName
+	}
+	return member.User.Username
+}
 
-	for _, baseGuild := range o.conn.State.Guilds {
-		guild, err := o.conn.Guild(baseGuild.ID)
-		if err != nil {
-			return nil, "", nil, err
-		}
-
-		nextPageToken := ""
-		for {
-			members, err := o.conn.GuildMembers(guild.ID, nextPageToken, 1000)
-			if err != nil {
-				return nil, "", nil, err
-			}
-			if len(members) == 0 {
-				break
-			}
-			for _, user := range members {
-				resource, err := newMemberResource(user, guild)
-				if err != nil {
-					return nil, "", nil, err
-				}
-
-				resources = append(resources, resource)
-			}
-			nextPageToken = ""
-			if len(members) > 0 {
-				nextPageToken = members[len(members)-1].User.ID
-			}
-		}
+// newMemberResource builds a user resource for a member of a server.
+func newMemberResource(member discord.Member, guildID string) (*v2.Resource, error) {
+	if member.User.ID == 0 {
+		// Discord omits the user object when the bot application lacks the
+		// Server Members Intent. The client rejects such a page before it gets
+		// here; this is the belt-and-braces guard for any other caller.
+		return nil, fmt.Errorf(
+			"baton-discord: server %s returned a member with no user object; "+
+				"enable the Server Members Intent on the bot application", guildID)
 	}
 
-	return resources, "", nil, nil
+	guildResourceID, err := resource_sdk.NewResourceID(guildResourceType, guildID)
+	if err != nil {
+		return nil, err
+	}
+
+	accountType := v2.UserTrait_ACCOUNT_TYPE_HUMAN
+	if member.User.Bot {
+		accountType = v2.UserTrait_ACCOUNT_TYPE_SERVICE
+	}
+
+	profile := map[string]any{
+		profileKeyUserID:  member.User.ID.String(),
+		"username":        member.User.Username,
+		profileKeyGuildID: guildID,
+		"is_bot":          member.User.Bot,
+	}
+	if member.Nick != nil && *member.Nick != "" {
+		profile["nickname"] = *member.Nick
+	}
+	if member.User.GlobalName != nil && *member.User.GlobalName != "" {
+		profile["global_name"] = *member.User.GlobalName
+	}
+
+	userTraits := []resource_sdk.UserTraitOption{
+		resource_sdk.WithAccountType(accountType),
+		resource_sdk.WithUserLogin(member.User.Username),
+	}
+
+	// Profile, status, icon, and created-at moved from the user trait onto the
+	// resource itself in baton-sdk v0.24; the trait-scoped options for these
+	// are deprecated.
+	resourceOptions := []resource_sdk.ResourceOption{
+		resource_sdk.WithParentResourceID(guildResourceID),
+		resource_sdk.WithExternalID(&v2.ExternalId{Id: member.User.ID.String()}),
+		resource_sdk.WithResourceProfile(profile),
+		// Discord exposes no per-member enabled/disabled state to a bot. A
+		// member that appears in the listing is an active member; removals and
+		// bans surface as the member disappearing.
+		resource_sdk.WithResourceStatus(v2.Status_RESOURCE_STATUS_ENABLED, ""),
+	}
+	if avatarURL := member.User.EffectiveAvatarURL(); avatarURL != "" {
+		resourceOptions = append(resourceOptions, resource_sdk.WithResourceIcon(&v2.AssetRef{Id: avatarURL}))
+	}
+	if member.JoinedAt != nil && !member.JoinedAt.IsZero() {
+		resourceOptions = append(resourceOptions, resource_sdk.WithResourceCreatedAt(*member.JoinedAt))
+	}
+
+	return resource_sdk.NewUserResource(
+		memberDisplayName(member),
+		userResourceType,
+		member.User.ID.String(),
+		userTraits,
+		resourceOptions...,
+	)
 }
 
-// Entitlements always returns an empty slice for users.
-func (o *userBuilder) Entitlements(_ context.Context, resource *v2.Resource, _ *pagination.Token) ([]*v2.Entitlement, string, annotations.Annotations, error) {
-	return nil, "", nil, nil
+// List returns the members of one server, a page at a time.
+//
+// A Discord account can belong to many servers, so the same user:<snowflake>
+// resource is emitted once per server the bot can see, parented to that server.
+// The resource ID stays the account snowflake, which is globally stable.
+func (o *userBuilder) List(
+	ctx context.Context,
+	parentResourceID *v2.ResourceId,
+	opts resource_sdk.SyncOpAttrs,
+) ([]*v2.Resource, *resource_sdk.SyncOpResults, error) {
+	// Users are only reachable through a server. The SDK also lists every
+	// resource type once with no parent, and that pass has nothing to do here;
+	// the per-server listings are driven by the guild's ChildResourceType
+	// annotations.
+	if parentResourceID == nil {
+		return nil, nil, nil
+	}
+
+	bag, err := parsePageToken(opts.PageToken.Token, userResourceTypeID)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	guildID := parentResourceID.Resource
+	members, nextCursor, err := o.client.MembersPage(ctx, guildID, bag.PageToken())
+	if err != nil {
+		return nil, nil, err
+	}
+
+	resources := make([]*v2.Resource, 0, len(members))
+	for _, member := range members {
+		memberResource, err := newMemberResource(member, guildID)
+		if err != nil {
+			return nil, nil, err
+		}
+		resources = append(resources, memberResource)
+	}
+
+	nextPage, err := bag.NextToken(nextCursor)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return resources, syncResults(nextPage), nil
 }
 
-// Grants always returns an empty slice for users since they don't have any entitlements.
-func (o *userBuilder) Grants(ctx context.Context, resource *v2.Resource, pToken *pagination.Token) ([]*v2.Grant, string, annotations.Annotations, error) {
-	return nil, "", nil, nil
+// Entitlements is empty: user accounts carry no access of their own. Access is
+// modelled on servers, roles, and channels.
+func (o *userBuilder) Entitlements(
+	_ context.Context,
+	_ *v2.Resource,
+	_ resource_sdk.SyncOpAttrs,
+) ([]*v2.Entitlement, *resource_sdk.SyncOpResults, error) {
+	return nil, nil, nil
 }
 
-func newUserBuilder(s *discordgo.Session) *userBuilder {
-	return &userBuilder{conn: s}
+// Grants is empty for the same reason as Entitlements.
+func (o *userBuilder) Grants(
+	_ context.Context,
+	_ *v2.Resource,
+	_ resource_sdk.SyncOpAttrs,
+) ([]*v2.Grant, *resource_sdk.SyncOpResults, error) {
+	return nil, nil, nil
 }

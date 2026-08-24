@@ -8,7 +8,6 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/connectorbuilder"
 	"github.com/conductorone/baton-sdk/pkg/types"
 	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
-	"github.com/spf13/viper"
 	"go.uber.org/zap"
 
 	cfg "github.com/ConductorOne/baton-discord/pkg/config"
@@ -28,17 +27,21 @@ func main() {
 	}
 
 	cmd.Version = version
-	err = cmd.Execute()
-	if err != nil {
+	if err := cmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())
 		os.Exit(1)
 	}
 }
 
-func getConnector(ctx context.Context, v *viper.Viper) (types.ConnectorServer, error) {
+// getConnector builds the connector from the generated, typed configuration.
+//
+// The generated cfg.Discord struct is used rather than a raw viper lookup so a
+// config field that is renamed in pkg/config/config.go but not here fails to
+// compile instead of silently reading an empty string at runtime.
+func getConnector(ctx context.Context, config *cfg.Discord) (types.ConnectorServer, error) {
 	l := ctxzap.Extract(ctx)
 
-	cb, err := connector.New(ctx, v.GetString("token"), v.GetString("base-url"))
+	cb, err := connector.New(ctx, config.Token, config.BaseUrl)
 	if err != nil {
 		l.Error("error creating connector", zap.Error(err))
 		return nil, err
