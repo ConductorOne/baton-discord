@@ -11,12 +11,16 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	"github.com/conductorone/baton-sdk/pkg/pagination"
 	resource_sdk "github.com/conductorone/baton-sdk/pkg/types/resource"
 	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/disgo/rest"
+	"github.com/disgoorg/snowflake/v2"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/ConductorOne/baton-discord/pkg/client"
 )
@@ -100,8 +104,8 @@ func newFakeDiscord(t *testing.T) *fakeDiscord {
 			return
 		}
 
-		// The RoundTripper override preserves discordgo's versioned path, so
-		// strip it to keep handler keys readable.
+		// disgo builds paths under its versioned API root, which rest.WithURL
+		// preserves. Strip that prefix to keep handler keys readable.
 		path := r.URL.Path
 		if trimmed, ok := trimAPIPrefix(path); ok {
 			path = trimmed
@@ -135,7 +139,9 @@ func newFakeDiscord(t *testing.T) *fakeDiscord {
 	return fake
 }
 
-// trimAPIPrefix strips discordgo's "/api/v<n>" prefix from a request path.
+// trimAPIPrefix strips disgo's "/api/v<n>" prefix from a request path. The
+// version is matched rather than hard-coded so a disgo upgrade does not
+// silently break every handler lookup.
 func trimAPIPrefix(path string) (string, bool) {
 	const prefix = "/api/v"
 	if !strings.HasPrefix(path, prefix) {
@@ -204,6 +210,19 @@ func (f *fakeDiscord) newClient(t *testing.T) *client.Client {
 		}
 	})
 	return c
+}
+
+// handleMemberLookup registers the per-member probe that channel grants use to
+// keep member overwrites from naming users who have left the server. Passing
+// present=false makes the fake answer the way Discord does for a departed
+// member.
+func (f *fakeDiscord) handleMemberLookup(userID string, present bool) {
+	path := "/guilds/" + testGuildID + "/members/" + userID
+	if !present {
+		f.handleStatus("GET", path, http.StatusNotFound, int(rest.JSONErrorCodeUnknownMember))
+		return
+	}
+	f.handleJSON("GET", path, memberJSON(userID, "member-"+userID, "", "", false, nil))
 }
 
 // afterCursor reads a paging cursor the way Discord interprets it: absent and
@@ -795,6 +814,8 @@ func TestChannelGrantsComeFromOverwriteAllowBits(t *testing.T) {
 				discord.PermissionSendMessagesInThreads, discord.PermissionAttachFiles),
 		}))
 
+	fake.handleMemberLookup(userAliceID, true)
+
 	builder := newChannelBuilder(fake.newClient(t))
 	grants, _, err := builder.Grants(context.Background(),
 		resourceFor(t, channelResourceType, channelTextID, "general", guildResourceID(t)),
@@ -1226,6 +1247,8 @@ func TestVoiceChannelGrantsReportActivities(t *testing.T) {
 				discord.PermissionUseEmbeddedActivities, 0),
 		}))
 
+	fake.handleMemberLookup(userAliceID, true)
+
 	builder := newChannelBuilder(fake.newClient(t))
 	grants, _, err := builder.Grants(context.Background(),
 		resourceFor(t, channelResourceType, channelVoiceID, "voice-room", guildResourceID(t)),
@@ -1409,5 +1432,154 @@ func TestGuildIDForProvisioningFallsBackToPrincipal(t *testing.T) {
 	// With neither source available, fail rather than guess.
 	if _, err := guildIDForProvisioning(roleWithoutParent, principalWithoutParent); err == nil {
 		t.Error("expected an error when no parent server can be resolved")
+	}
+}
+
+// TestChannelGrantsSkipDepartedMembers covers the dangling-principal case.
+//
+// Discord keeps a channel's permission overwrites when the targeted member
+// leaves the server, so a member overwrite can name a user the member listing
+// never returns. Emitting a grant for one produces a principal that does not
+// exist in the sync, which the SDK reports as a dangling reference.
+func TestChannelGrantsSkipDepartedMembers(t *testing.T) {
+	fake := newFakeDiscord(t)
+
+	fake.handleJSON("GET", "/channels/"+channelTextID, channelJSON(
+		channelTextID, "general", discord.ChannelTypeGuildText, []map[string]any{
+			// A role overwrite needs no probe: deleting a role takes its
+			// overwrites with it.
+			overwriteJSON(roleEveryoneID, overwriteWireTypeRole, discord.PermissionViewChannel, 0),
+			// A current member.
+			overwriteJSON(userAliceID, overwriteWireTypeMember, discord.PermissionViewChannel, 0),
+			// Someone who has since left the server.
+			overwriteJSON(userStrangerID, overwriteWireTypeMember, discord.PermissionViewChannel, 0),
+		}))
+	fake.handleMemberLookup(userAliceID, true)
+	fake.handleMemberLookup(userStrangerID, false)
+
+	builder := newChannelBuilder(fake.newClient(t))
+	grants, _, err := builder.Grants(context.Background(),
+		resourceFor(t, channelResourceType, channelTextID, "general", guildResourceID(t)),
+		resource_sdk.SyncOpAttrs{})
+	if err != nil {
+		t.Fatalf("Grants: %v", err)
+	}
+
+	principals := map[string]bool{}
+	for _, g := range grants {
+		principals[g.GetPrincipal().GetId().GetResource()] = true
+	}
+
+	if !principals[roleEveryoneID] {
+		t.Error("a role overwrite must still produce a grant")
+	}
+	if !principals[userAliceID] {
+		t.Error("a current member's overwrite must produce a grant")
+	}
+	if principals[userStrangerID] {
+		t.Error("a departed member's overwrite must not produce a grant with an unsynced principal")
+	}
+}
+
+// TestUserResourceFieldsAreAccountScoped checks that fields on a user resource
+// describe the account rather than one of the servers it happens to belong to.
+// The resource is keyed by the global account snowflake, so per-server values
+// would be whichever server was written last.
+func TestUserResourceFieldsAreAccountScoped(t *testing.T) {
+	fake := newFakeDiscord(t)
+	fake.handleJSON("GET", "/guilds/"+testGuildID+"/members", []map[string]any{
+		memberJSON(userAliceID, "alice", "", "", false, nil),
+	})
+
+	builder := newUserBuilder(fake.newClient(t))
+	resources, _, err := builder.List(context.Background(), guildResourceID(t), resource_sdk.SyncOpAttrs{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(resources) != 1 {
+		t.Fatalf("got %d users, want 1", len(resources))
+	}
+	user := resources[0]
+
+	// guild_id is per-server and has no global equivalent, so it must not be on
+	// the account's profile.
+	if _, ok := user.GetProfile().AsMap()[profileKeyGuildID]; ok {
+		t.Error("the user profile must not carry a per-server guild_id")
+	}
+
+	// created_at must be the account's creation time, which Discord encodes in
+	// the snowflake, not the per-server join date the fixture supplies.
+	aliceID, err := snowflake.Parse(userAliceID)
+	if err != nil {
+		t.Fatalf("parsing fixture snowflake: %v", err)
+	}
+	got := user.GetCreatedAt().AsTime()
+	if !got.Equal(aliceID.Time()) {
+		t.Errorf("created_at = %s, want the account creation time encoded in the snowflake (%s)",
+			got, aliceID.Time())
+	}
+	if got.Equal(mustParseTime(t, testJoinedAt)) {
+		t.Error("created_at is the per-server join date, which is not account-scoped")
+	}
+}
+
+func mustParseTime(t *testing.T, value string) time.Time {
+	t.Helper()
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		t.Fatalf("parsing %q: %v", value, err)
+	}
+	return parsed
+}
+
+// TestDiscordErrorsCarryStatusCodes covers error classification at the SDK
+// boundary. Without a gRPC status code every failure arrives as Unknown, so C1
+// cannot tell a permission refusal from a transient one, and the provisioning
+// retryer — which retries only Unavailable and DeadlineExceeded — never fires.
+func TestDiscordErrorsCarryStatusCodes(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		httpStatus int
+		want       codes.Code
+	}{
+		{"unauthorized", http.StatusUnauthorized, codes.Unauthenticated},
+		{"forbidden", http.StatusForbidden, codes.PermissionDenied},
+		{"not found", http.StatusNotFound, codes.NotFound},
+		{"rate limited", http.StatusTooManyRequests, codes.ResourceExhausted},
+		// Transient upstream failures must land in the retry set.
+		{"server error", http.StatusInternalServerError, codes.Unavailable},
+		{"bad gateway", http.StatusBadGateway, codes.Unavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := newFakeDiscord(t)
+			fake.handleStatus("GET", "/guilds/"+testGuildID+"/roles", tc.httpStatus, 0)
+
+			_, err := fake.newClient(t).Roles(context.Background(), testGuildID)
+			if err == nil {
+				t.Fatalf("expected an error for HTTP %d", tc.httpStatus)
+			}
+			if got := status.Code(err); got != tc.want {
+				t.Errorf("status.Code = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestNotFoundStaysUnwrappable checks that adding a status code did not break
+// the error inspection the idempotent revoke paths depend on.
+func TestNotFoundStaysUnwrappable(t *testing.T) {
+	fake := newFakeDiscord(t)
+	fake.handleStatus("GET", "/guilds/"+testGuildID+"/roles",
+		http.StatusNotFound, int(rest.JSONErrorCodeUnknownGuild))
+
+	_, err := fake.newClient(t).Roles(context.Background(), testGuildID)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !client.IsNotFound(err) {
+		t.Error("IsNotFound must still see through the status wrapper")
+	}
+	if got := status.Code(err); got != codes.NotFound {
+		t.Errorf("status.Code = %v, want NotFound", got)
 	}
 }
