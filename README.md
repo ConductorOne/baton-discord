@@ -132,6 +132,12 @@ the connector's dominant cost. It is paginated rather than cached so memory
 stays bounded by one page regardless of server size; disgo's rate limiter
 handles the resulting request volume.
 
+Channel grants additionally look up each member named by a channel permission
+overwrite, because Discord keeps those overwrites after the member leaves and a
+grant for a departed user would point at a principal the sync never emitted.
+Member overwrites are uncommon next to role overwrites, so this is a small
+number of extra requests per channel.
+
 ## Known limitations
 
 **Concurrent channel permission changes.** Discord replaces a permission
@@ -149,10 +155,17 @@ data is correct — but the parent recorded for such an account depends on sync
 order and should not be treated as "the" server for that account. Server
 membership is authoritatively the `access` grant on each server.
 
+Fields on the account are deliberately account-scoped rather than per-server for
+this reason: `created_at` is the account's creation time, decoded from the
+snowflake, rather than the per-server join date, and no server ID is recorded on
+the profile.
+
 **Rate limiting is handled inside disgo** rather than surfaced to the Baton
 SDK, so a sync cannot pace itself against Discord's rate-limit headers or
 checkpoint on a 429. disgo blocks and retries, which is correct but opaque to
-the syncer.
+the syncer. Failures that do surface carry a gRPC status code, so a permission
+refusal is distinguishable from a transient one and the SDK's provisioning
+retryer can act on the difference.
 
 # Contributing, Support and Issues
 

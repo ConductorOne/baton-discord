@@ -8,13 +8,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/disgo/rest"
 	"github.com/disgoorg/snowflake/v2"
+	"google.golang.org/grpc/codes"
+
+	"github.com/conductorone/baton-sdk/pkg/uhttp"
 )
 
 // Discord's maximum page sizes for the cursor-paginated collections used here.
@@ -46,7 +51,18 @@ func New(ctx context.Context, token string, baseURL string) (*Client, error) {
 	}
 
 	httpClient := &http.Client{Timeout: requestTimeout}
-	opts := []rest.ClientConfigOpt{rest.WithHTTPClient(httpClient)}
+	opts := []rest.ClientConfigOpt{
+		rest.WithHTTPClient(httpClient),
+		// Pin the logger rather than inheriting slog.Default(). At debug level
+		// disgo logs every request and response body verbatim, which includes
+		// the create-invite response carrying the invite code that
+		// guildBuilder.Grant deliberately keeps out of its errors. Flooring the
+		// level here makes that guarantee a property of this client instead of
+		// an accident of whatever the process default happens to be.
+		rest.WithLogger(slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
+			Level: slog.LevelInfo,
+		}))),
+	}
 
 	if baseURL != "" {
 		// disgo addresses the API through a single configurable base, so a test
@@ -80,9 +96,53 @@ func (c *Client) Close() error {
 func parseID(kind string, id string) (snowflake.ID, error) {
 	parsed, err := snowflake.Parse(id)
 	if err != nil {
-		return 0, fmt.Errorf("baton-discord: %s ID %q is not a valid Discord snowflake: %w", kind, id, err)
+		return 0, uhttp.WrapErrors(codes.InvalidArgument,
+			fmt.Sprintf("baton-discord: %s ID %q is not a valid Discord snowflake", kind, id), err)
 	}
 	return parsed, nil
+}
+
+// statusCodeFor maps a Discord HTTP status onto the gRPC code the Baton SDK
+// reasons about.
+//
+// Without this every failure reaches the SDK as codes.Unknown, with two
+// consequences: C1 cannot tell a 403 role-hierarchy refusal from a transient
+// blip, and the provisioning retryer never fires, because it retries only
+// Unavailable and DeadlineExceeded.
+//
+// 5xx maps to Unavailable rather than Internal for exactly that reason —
+// Internal is not in the retry set, so classifying a transient upstream failure
+// as Internal would describe it accurately and still never retry it.
+func statusCodeFor(err error) codes.Code {
+	statusCode := httpStatus(err)
+	switch statusCode {
+	case http.StatusBadRequest:
+		return codes.InvalidArgument
+	case http.StatusUnauthorized:
+		return codes.Unauthenticated
+	case http.StatusForbidden:
+		return codes.PermissionDenied
+	case http.StatusNotFound:
+		return codes.NotFound
+	case http.StatusTooManyRequests:
+		// disgo blocks and retries rate limits internally, so a 429 reaching
+		// here means it gave up rather than that we raced one request.
+		return codes.ResourceExhausted
+	}
+	if statusCode >= 500 && statusCode < 600 {
+		return codes.Unavailable
+	}
+	return codes.Unknown
+}
+
+// wrapErr annotates a Discord failure with its gRPC status code while keeping
+// the original error unwrappable, so IsNotFound and friends still work.
+func wrapErr(err error, format string, args ...any) error {
+	if err == nil {
+		return nil
+	}
+	msg := fmt.Sprintf(format, args...)
+	return uhttp.WrapErrors(statusCodeFor(err), msg, fmt.Errorf("%s: %w", msg, err))
 }
 
 // CurrentUser returns the bot's own user, the cheapest proof that a token is
@@ -91,7 +151,7 @@ func parseID(kind string, id string) (snowflake.ID, error) {
 func (c *Client) CurrentUser(ctx context.Context) (*discord.OAuth2User, error) {
 	user, err := c.rest.GetCurrentUser("", rest.WithCtx(ctx))
 	if err != nil {
-		return nil, fmt.Errorf("baton-discord: failed to identify the bot: %w", err)
+		return nil, wrapErr(err, "baton-discord: failed to identify the bot")
 	}
 	return user, nil
 }
@@ -104,7 +164,7 @@ func (c *Client) Guild(ctx context.Context, guildID string) (*discord.RestGuild,
 	}
 	guild, err := c.rest.GetGuild(id, false, rest.WithCtx(ctx))
 	if err != nil {
-		return nil, fmt.Errorf("baton-discord: failed to get guild %s: %w", guildID, err)
+		return nil, wrapErr(err, "baton-discord: failed to get guild %s", guildID)
 	}
 	return guild, nil
 }
@@ -126,7 +186,7 @@ func (c *Client) GuildsPage(ctx context.Context, after string) ([]discord.OAuth2
 
 	guilds, err := c.rest.GetCurrentUserGuilds("", 0, afterID, GuildPageSize, false, rest.WithCtx(ctx))
 	if err != nil {
-		return nil, "", fmt.Errorf("baton-discord: failed to list guilds: %w", err)
+		return nil, "", wrapErr(err, "baton-discord: failed to list guilds")
 	}
 
 	next := ""
@@ -163,7 +223,7 @@ func (c *Client) MembersPage(ctx context.Context, guildID string, after string) 
 				"baton-discord: not allowed to list members of guild %s; enable the "+
 					"Server Members Intent on the bot application: %w", guildID, err)
 		}
-		return nil, "", fmt.Errorf("baton-discord: failed to list members of guild %s: %w", guildID, err)
+		return nil, "", wrapErr(err, "baton-discord: failed to list members of guild %s", guildID)
 	}
 
 	// A member with no user is a misconfiguration, not a member to skip.
@@ -187,6 +247,29 @@ func (c *Client) MembersPage(ctx context.Context, guildID string, after string) 
 	return members, next, nil
 }
 
+// Member returns one guild member. The second result is false when the user is
+// not a member of the guild, which Discord reports as a 404.
+func (c *Client) Member(ctx context.Context, guildID, userID string) (*discord.Member, bool, error) {
+	guild, err := parseID("guild", guildID)
+	if err != nil {
+		return nil, false, err
+	}
+	user, err := parseID("user", userID)
+	if err != nil {
+		return nil, false, err
+	}
+
+	member, err := c.rest.GetMember(guild, user, rest.WithCtx(ctx))
+	if err != nil {
+		if IsNotFound(err) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf(
+			"baton-discord: failed to get member %s of guild %s: %w", userID, guildID, err)
+	}
+	return member, true, nil
+}
+
 // Roles returns every role in a guild. Discord returns this collection whole.
 func (c *Client) Roles(ctx context.Context, guildID string) ([]discord.Role, error) {
 	id, err := parseID("guild", guildID)
@@ -195,7 +278,7 @@ func (c *Client) Roles(ctx context.Context, guildID string) ([]discord.Role, err
 	}
 	roles, err := c.rest.GetRoles(id, rest.WithCtx(ctx))
 	if err != nil {
-		return nil, fmt.Errorf("baton-discord: failed to list roles of guild %s: %w", guildID, err)
+		return nil, wrapErr(err, "baton-discord: failed to list roles of guild %s", guildID)
 	}
 	return roles, nil
 }
@@ -208,7 +291,7 @@ func (c *Client) Channels(ctx context.Context, guildID string) ([]discord.GuildC
 	}
 	channels, err := c.rest.GetGuildChannels(id, rest.WithCtx(ctx))
 	if err != nil {
-		return nil, fmt.Errorf("baton-discord: failed to list channels of guild %s: %w", guildID, err)
+		return nil, wrapErr(err, "baton-discord: failed to list channels of guild %s", guildID)
 	}
 	return channels, nil
 }
@@ -221,7 +304,7 @@ func (c *Client) Channel(ctx context.Context, channelID string) (discord.GuildCh
 	}
 	channel, err := c.rest.GetChannel(id, rest.WithCtx(ctx))
 	if err != nil {
-		return nil, fmt.Errorf("baton-discord: failed to get channel %s: %w", channelID, err)
+		return nil, wrapErr(err, "baton-discord: failed to get channel %s", channelID)
 	}
 
 	guildChannel, ok := channel.(discord.GuildChannel)
@@ -240,8 +323,7 @@ func (c *Client) AddMemberRole(ctx context.Context, guildID, userID, roleID, rea
 	}
 	if err := c.rest.AddMemberRole(guild, user, role,
 		rest.WithCtx(ctx), rest.WithReason(reason)); err != nil {
-		return fmt.Errorf("baton-discord: failed to add role %s to user %s in guild %s: %w",
-			roleID, userID, guildID, err)
+		return wrapErr(err, "baton-discord: failed to add role %s to user %s in guild %s", roleID, userID, guildID)
 	}
 	return nil
 }
@@ -254,8 +336,7 @@ func (c *Client) RemoveMemberRole(ctx context.Context, guildID, userID, roleID, 
 	}
 	if err := c.rest.RemoveMemberRole(guild, user, role,
 		rest.WithCtx(ctx), rest.WithReason(reason)); err != nil {
-		return fmt.Errorf("baton-discord: failed to remove role %s from user %s in guild %s: %w",
-			roleID, userID, guildID, err)
+		return wrapErr(err, "baton-discord: failed to remove role %s from user %s in guild %s", roleID, userID, guildID)
 	}
 	return nil
 }
@@ -287,7 +368,7 @@ func (c *Client) RemoveGuildMember(ctx context.Context, guildID, userID, reason 
 		return err
 	}
 	if err := c.rest.RemoveMember(guild, user, rest.WithCtx(ctx), rest.WithReason(reason)); err != nil {
-		return fmt.Errorf("baton-discord: failed to remove user %s from guild %s: %w", userID, guildID, err)
+		return wrapErr(err, "baton-discord: failed to remove user %s from guild %s", userID, guildID)
 	}
 	return nil
 }
@@ -324,8 +405,7 @@ func (c *Client) SetChannelOverwrite(
 
 	if err := c.rest.UpdatePermissionOverwrite(channel, target, update,
 		rest.WithCtx(ctx), rest.WithReason(reason)); err != nil {
-		return fmt.Errorf("baton-discord: failed to set permission overwrite for %s on channel %s: %w",
-			targetID, channelID, err)
+		return wrapErr(err, "baton-discord: failed to set permission overwrite for %s on channel %s", targetID, channelID)
 	}
 	return nil
 }
@@ -342,8 +422,7 @@ func (c *Client) DeleteChannelOverwrite(ctx context.Context, channelID, targetID
 	}
 	if err := c.rest.DeletePermissionOverwrite(channel, target,
 		rest.WithCtx(ctx), rest.WithReason(reason)); err != nil {
-		return fmt.Errorf("baton-discord: failed to delete permission overwrite for %s on channel %s: %w",
-			targetID, channelID, err)
+		return wrapErr(err, "baton-discord: failed to delete permission overwrite for %s on channel %s", targetID, channelID)
 	}
 	return nil
 }
@@ -364,7 +443,7 @@ func (c *Client) CreateInvite(ctx context.Context, channelID string, maxAgeSecon
 		Unique: true,
 	}, rest.WithCtx(ctx))
 	if err != nil {
-		return nil, fmt.Errorf("baton-discord: failed to create an invite for channel %s: %w", channelID, err)
+		return nil, wrapErr(err, "baton-discord: failed to create an invite for channel %s", channelID)
 	}
 	return invite, nil
 }
@@ -372,7 +451,7 @@ func (c *Client) CreateInvite(ctx context.Context, channelID string, maxAgeSecon
 // DeleteInvite revokes an invite so it can no longer be redeemed.
 func (c *Client) DeleteInvite(ctx context.Context, code string) error {
 	if _, err := c.rest.DeleteInvite(code, rest.WithCtx(ctx)); err != nil {
-		return fmt.Errorf("baton-discord: failed to delete invite: %w", err)
+		return wrapErr(err, "baton-discord: failed to delete invite")
 	}
 	return nil
 }
@@ -386,12 +465,12 @@ func (c *Client) SendDirectMessage(ctx context.Context, userID, content string) 
 
 	channel, err := c.rest.CreateDMChannel(user, rest.WithCtx(ctx))
 	if err != nil {
-		return fmt.Errorf("baton-discord: failed to open a DM channel with user %s: %w", userID, err)
+		return wrapErr(err, "baton-discord: failed to open a DM channel with user %s", userID)
 	}
 
 	if _, err := c.rest.CreateMessage(channel.ID(), discord.MessageCreate{Content: content},
 		rest.WithCtx(ctx)); err != nil {
-		return fmt.Errorf("baton-discord: failed to send a DM to user %s: %w", userID, err)
+		return wrapErr(err, "baton-discord: failed to send a DM to user %s", userID)
 	}
 	return nil
 }
