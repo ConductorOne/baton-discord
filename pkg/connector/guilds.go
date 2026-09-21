@@ -270,6 +270,14 @@ func (o *guildBuilder) Revoke(ctx context.Context, g *v2.Grant) (annotations.Ann
 	if err := requireResourceType(g.Entitlement.Resource, guildResourceTypeID); err != nil {
 		return nil, err
 	}
+	// The SDK guarantees the entitlement chain but passes Grant.Principal
+	// through unvalidated. Without this an absent principal panics, and a
+	// role-typed one would hand a role snowflake to RemoveGuildMember whose 404
+	// is swallowed below as "already revoked" — reporting success for a revoke
+	// that never happened.
+	if err := requireResourceType(g.Principal, userResourceTypeID); err != nil {
+		return nil, err
+	}
 
 	guildID := g.Entitlement.Resource.Id.Resource
 	userID := g.Principal.Id.Resource

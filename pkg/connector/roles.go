@@ -232,6 +232,10 @@ func (r *roleBuilder) Revoke(ctx context.Context, g *v2.Grant) (annotations.Anno
 	if err := requireResourceType(g.Entitlement.Resource, roleResourceTypeID); err != nil {
 		return nil, err
 	}
+	// See guildBuilder.Revoke: Grant.Principal arrives unvalidated.
+	if err := requireResourceType(g.Principal, userResourceTypeID); err != nil {
+		return nil, err
+	}
 
 	guildID, err := guildIDForProvisioning(g.Entitlement.Resource, g.Principal)
 	if err != nil {

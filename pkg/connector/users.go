@@ -67,10 +67,9 @@ func newMemberResource(member discord.Member, guildID string) (*v2.Resource, err
 	}
 
 	profile := map[string]any{
-		profileKeyUserID:  member.User.ID.String(),
-		"username":        member.User.Username,
-		profileKeyGuildID: guildID,
-		"is_bot":          member.User.Bot,
+		profileKeyUserID: member.User.ID.String(),
+		"username":       member.User.Username,
+		"is_bot":         member.User.Bot,
 	}
 	if member.Nick != nil && *member.Nick != "" {
 		profile["nickname"] = *member.Nick
@@ -99,9 +98,12 @@ func newMemberResource(member discord.Member, guildID string) (*v2.Resource, err
 	if avatarURL := member.User.EffectiveAvatarURL(); avatarURL != "" {
 		resourceOptions = append(resourceOptions, resource_sdk.WithResourceIcon(&v2.AssetRef{Id: avatarURL}))
 	}
-	if member.JoinedAt != nil && !member.JoinedAt.IsZero() {
-		resourceOptions = append(resourceOptions, resource_sdk.WithResourceCreatedAt(*member.JoinedAt))
-	}
+	// Discord snowflakes encode their creation timestamp, so the account's
+	// creation time is derivable and is a property of the account rather than of
+	// any one server. The member's join date is per-server and would be
+	// whichever server was written last on an account in several of them.
+	resourceOptions = append(resourceOptions,
+		resource_sdk.WithResourceCreatedAt(member.User.ID.Time()))
 
 	return resource_sdk.NewUserResource(
 		memberDisplayName(member),

@@ -200,11 +200,31 @@ func (c *channelBuilder) Grants(
 
 	permissions := permissionsForChannel(channel.Type())
 
+	// Member overwrites outlive the membership they were created for: Discord
+	// keeps them when the targeted member leaves the server. Emitting those
+	// would produce grants pointing at users that the user listing never
+	// returned, which the SDK reports as dangling principals. Role overwrites
+	// need no such check, because a deleted role takes its overwrites with it.
+	guildID, err := parentGuildID(resource)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	var grants []*v2.Grant
 	for _, overwrite := range channel.PermissionOverwrites() {
 		target, ok := describeOverwrite(overwrite)
 		if !ok {
 			continue
+		}
+
+		if target.ResourceTypeID == userResourceTypeID {
+			_, stillAMember, err := c.client.Member(ctx, guildID, target.ID)
+			if err != nil {
+				return nil, nil, err
+			}
+			if !stillAMember {
+				continue
+			}
 		}
 
 		principal, err := resource_sdk.NewResourceID(
@@ -318,6 +338,12 @@ func (c *channelBuilder) Grant(
 // overwrite is deleted rather than left behind as a no-op.
 func (c *channelBuilder) Revoke(ctx context.Context, g *v2.Grant) (annotations.Annotations, error) {
 	if err := requireResourceType(g.Entitlement.Resource, channelResourceTypeID); err != nil {
+		return nil, err
+	}
+	// A channel overwrite targets a role or a member, so both are valid here,
+	// but the principal still has to be one of them and has to exist. See
+	// guildBuilder.Revoke.
+	if _, err := overwriteIsForRole(g.Principal); err != nil {
 		return nil, err
 	}
 
