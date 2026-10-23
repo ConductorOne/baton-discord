@@ -235,9 +235,9 @@ func (c *Client) MembersPage(ctx context.Context, guildID string, after string) 
 	// the server from that role's grants.
 	for _, member := range members {
 		if member.User.ID == 0 {
-			return nil, "", wrapErr(err,
+			return nil, "", uhttp.WrapErrors(codes.FailedPrecondition, fmt.Sprintf(
 				"baton-discord: guild %s returned a member with no user object; "+
-					"enable the Server Members Intent on the bot application", guildID)
+					"enable the Server Members Intent on the bot application", guildID))
 		}
 	}
 

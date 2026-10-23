@@ -1545,7 +1545,7 @@ func TestDiscordErrorsCarryStatusCodes(t *testing.T) {
 		{"unauthorized", http.StatusUnauthorized, codes.Unauthenticated},
 		{"forbidden", http.StatusForbidden, codes.PermissionDenied},
 		{"not found", http.StatusNotFound, codes.NotFound},
-		{"rate limited", http.StatusTooManyRequests, codes.ResourceExhausted},
+		{"rate limited", http.StatusTooManyRequests, codes.Unavailable},
 		// Transient upstream failures must land in the retry set.
 		{"server error", http.StatusInternalServerError, codes.Unavailable},
 		{"bad gateway", http.StatusBadGateway, codes.Unavailable},
