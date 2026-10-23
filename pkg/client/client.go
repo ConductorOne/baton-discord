@@ -125,9 +125,10 @@ func statusCodeFor(err error) codes.Code {
 	case http.StatusNotFound:
 		return codes.NotFound
 	case http.StatusTooManyRequests:
-		// disgo blocks and retries rate limits internally, so a 429 reaching
-		// here means it gave up rather than that we raced one request.
-		return codes.ResourceExhausted
+		return codes.Unavailable
+	}
+	if statusCode >= 200 && statusCode < 300 {
+		return codes.OK
 	}
 	if statusCode >= 500 && statusCode < 600 {
 		return codes.Unavailable
@@ -142,7 +143,7 @@ func wrapErr(err error, format string, args ...any) error {
 		return nil
 	}
 	msg := fmt.Sprintf(format, args...)
-	return uhttp.WrapErrors(statusCodeFor(err), msg, fmt.Errorf("%s: %w", msg, err))
+	return uhttp.WrapErrors(statusCodeFor(err), msg, err)
 }
 
 // CurrentUser returns the bot's own user, the cheapest proof that a token is
@@ -219,9 +220,9 @@ func (c *Client) MembersPage(ctx context.Context, guildID string, after string) 
 	members, err := c.rest.GetMembers(id, MemberPageSize, afterID, rest.WithCtx(ctx))
 	if err != nil {
 		if IsForbidden(err) {
-			return nil, "", fmt.Errorf(
+			return nil, "", wrapErr(err,
 				"baton-discord: not allowed to list members of guild %s; enable the "+
-					"Server Members Intent on the bot application: %w", guildID, err)
+					"Server Members Intent on the bot application", guildID)
 		}
 		return nil, "", wrapErr(err, "baton-discord: failed to list members of guild %s", guildID)
 	}
@@ -234,7 +235,7 @@ func (c *Client) MembersPage(ctx context.Context, guildID string, after string) 
 	// the server from that role's grants.
 	for _, member := range members {
 		if member.User.ID == 0 {
-			return nil, "", fmt.Errorf(
+			return nil, "", wrapErr(err,
 				"baton-discord: guild %s returned a member with no user object; "+
 					"enable the Server Members Intent on the bot application", guildID)
 		}
