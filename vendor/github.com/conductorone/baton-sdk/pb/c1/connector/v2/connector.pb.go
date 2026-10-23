@@ -46,6 +46,10 @@ const (
 	// The connector can mint new credentials for an existing identity via
 	// CredentialManagerService.IssueCredential.
 	Capability_CAPABILITY_CREDENTIAL_ISSUE Capability = 14
+	// IssueCredential supports the baton/jwe/v1 X-Wing recipient with one config
+	// and one plaintext value. This names that one suite, not JWE in general;
+	// another suite needs its own capability value.
+	Capability_CAPABILITY_CREDENTIAL_ENCRYPTION_JWE_XWING_V1 Capability = 16
 )
 
 // Enum value maps for Capability.
@@ -66,23 +70,25 @@ var (
 		12: "CAPABILITY_EVENT_FEED_V2",
 		13: "CAPABILITY_SERVICE_MODE_TARGETED_SYNC",
 		14: "CAPABILITY_CREDENTIAL_ISSUE",
+		16: "CAPABILITY_CREDENTIAL_ENCRYPTION_JWE_XWING_V1",
 	}
 	Capability_value = map[string]int32{
-		"CAPABILITY_UNSPECIFIED":                0,
-		"CAPABILITY_PROVISION":                  1,
-		"CAPABILITY_SYNC":                       2,
-		"CAPABILITY_EVENT_FEED":                 3,
-		"CAPABILITY_TICKETING":                  4,
-		"CAPABILITY_ACCOUNT_PROVISIONING":       5,
-		"CAPABILITY_CREDENTIAL_ROTATION":        6,
-		"CAPABILITY_RESOURCE_CREATE":            7,
-		"CAPABILITY_RESOURCE_DELETE":            8,
-		"CAPABILITY_SYNC_SECRETS":               9,
-		"CAPABILITY_ACTIONS":                    10,
-		"CAPABILITY_TARGETED_SYNC":              11,
-		"CAPABILITY_EVENT_FEED_V2":              12,
-		"CAPABILITY_SERVICE_MODE_TARGETED_SYNC": 13,
-		"CAPABILITY_CREDENTIAL_ISSUE":           14,
+		"CAPABILITY_UNSPECIFIED":                        0,
+		"CAPABILITY_PROVISION":                          1,
+		"CAPABILITY_SYNC":                               2,
+		"CAPABILITY_EVENT_FEED":                         3,
+		"CAPABILITY_TICKETING":                          4,
+		"CAPABILITY_ACCOUNT_PROVISIONING":               5,
+		"CAPABILITY_CREDENTIAL_ROTATION":                6,
+		"CAPABILITY_RESOURCE_CREATE":                    7,
+		"CAPABILITY_RESOURCE_DELETE":                    8,
+		"CAPABILITY_SYNC_SECRETS":                       9,
+		"CAPABILITY_ACTIONS":                            10,
+		"CAPABILITY_TARGETED_SYNC":                      11,
+		"CAPABILITY_EVENT_FEED_V2":                      12,
+		"CAPABILITY_SERVICE_MODE_TARGETED_SYNC":         13,
+		"CAPABILITY_CREDENTIAL_ISSUE":                   14,
+		"CAPABILITY_CREDENTIAL_ENCRYPTION_JWE_XWING_V1": 16,
 	}
 )
 
@@ -760,9 +766,18 @@ func (b0 CredentialDetailsCredentialRotation_builder) Build() *CredentialDetails
 // Advertises which credential options CredentialManagerService.IssueCredential
 // supports for this identity type.
 type CredentialDetailsCredentialIssue struct {
-	state           protoimpl.MessageState             `protogen:"hybrid.v1"`
-	Options         []*CredentialIssueOptionDescriptor `protobuf:"bytes,1,rep,name=options,proto3" json:"options,omitempty"`
-	PreferredOption CapabilityDetailCredentialOption   `protobuf:"varint,2,opt,name=preferred_option,json=preferredOption,proto3,enum=c1.connector.v2.CapabilityDetailCredentialOption" json:"preferred_option,omitempty"`
+	state protoimpl.MessageState `protogen:"hybrid.v1"`
+	// Advertised issuance options, unique on (option, secret_resource_type_id).
+	// Several descriptors may share an option when they mint different secret
+	// resource types -- an organization-wide API key and a per-identity API key,
+	// for example.
+	Options []*CredentialIssueOptionDescriptor `protobuf:"bytes,1,rep,name=options,proto3" json:"options,omitempty"`
+	// The preferred credential shape. Selection is two-level: this field picks
+	// the shape and CredentialIssueOptionDescriptor.preferred picks the
+	// descriptor within it. To resolve the default, look only at the descriptors
+	// carrying this option: one of them has preferred set, except where the
+	// option has a single descriptor, which is the default with the flag unset.
+	PreferredOption CapabilityDetailCredentialOption `protobuf:"varint,2,opt,name=preferred_option,json=preferredOption,proto3,enum=c1.connector.v2.CapabilityDetailCredentialOption" json:"preferred_option,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -817,7 +832,16 @@ func (x *CredentialDetailsCredentialIssue) SetPreferredOption(v CapabilityDetail
 type CredentialDetailsCredentialIssue_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	Options         []*CredentialIssueOptionDescriptor
+	// Advertised issuance options, unique on (option, secret_resource_type_id).
+	// Several descriptors may share an option when they mint different secret
+	// resource types -- an organization-wide API key and a per-identity API key,
+	// for example.
+	Options []*CredentialIssueOptionDescriptor
+	// The preferred credential shape. Selection is two-level: this field picks
+	// the shape and CredentialIssueOptionDescriptor.preferred picks the
+	// descriptor within it. To resolve the default, look only at the descriptors
+	// carrying this option: one of them has preferred set, except where the
+	// option has a single descriptor, which is the default with the flag unset.
 	PreferredOption CapabilityDetailCredentialOption
 }
 
@@ -842,10 +866,18 @@ type CredentialIssueOptionDescriptor struct {
 	ResourceMode           CredentialResourceMode           `protobuf:"varint,8,opt,name=resource_mode,json=resourceMode,proto3,enum=c1.connector.v2.CredentialResourceMode" json:"resource_mode,omitempty"`
 	// Resource type returned by IssueCredential. It must be registered with a
 	// ResourceDeleterV2 so every issued credential has a provider revoke path,
-	// including virtual credentials that cannot be listed later.
+	// including virtual credentials that cannot be listed later. Together with
+	// option it identifies this descriptor, so two credential kinds sharing one
+	// shape must return distinct resource types.
 	SecretResourceTypeId string `protobuf:"bytes,9,opt,name=secret_resource_type_id,json=secretResourceTypeId,proto3" json:"secret_resource_type_id,omitempty"`
-	unknownFields        protoimpl.UnknownFields
-	sizeCache            protoimpl.SizeCache
+	// Marks this descriptor the default within its option, for a caller
+	// presenting a choice. At most one descriptor per option may set it, and one
+	// must whenever several descriptors share that option: a default taken from
+	// declaration order would not be stable. It selects nothing at issue time --
+	// CredentialIssueOptions.secret_resource_type_id is still required.
+	Preferred     bool `protobuf:"varint,10,opt,name=preferred,proto3" json:"preferred,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CredentialIssueOptionDescriptor) Reset() {
@@ -936,6 +968,13 @@ func (x *CredentialIssueOptionDescriptor) GetSecretResourceTypeId() string {
 	return ""
 }
 
+func (x *CredentialIssueOptionDescriptor) GetPreferred() bool {
+	if x != nil {
+		return x.Preferred
+	}
+	return false
+}
+
 func (x *CredentialIssueOptionDescriptor) SetOption(v CapabilityDetailCredentialOption) {
 	x.Option = v
 }
@@ -972,6 +1011,10 @@ func (x *CredentialIssueOptionDescriptor) SetSecretResourceTypeId(v string) {
 	x.SecretResourceTypeId = v
 }
 
+func (x *CredentialIssueOptionDescriptor) SetPreferred(v bool) {
+	x.Preferred = v
+}
+
 func (x *CredentialIssueOptionDescriptor) HasExpiry() bool {
 	if x == nil {
 		return false
@@ -996,8 +1039,16 @@ type CredentialIssueOptionDescriptor_builder struct {
 	ResourceMode           CredentialResourceMode
 	// Resource type returned by IssueCredential. It must be registered with a
 	// ResourceDeleterV2 so every issued credential has a provider revoke path,
-	// including virtual credentials that cannot be listed later.
+	// including virtual credentials that cannot be listed later. Together with
+	// option it identifies this descriptor, so two credential kinds sharing one
+	// shape must return distinct resource types.
 	SecretResourceTypeId string
+	// Marks this descriptor the default within its option, for a caller
+	// presenting a choice. At most one descriptor per option may set it, and one
+	// must whenever several descriptors share that option: a default taken from
+	// declaration order would not be stable. It selects nothing at issue time --
+	// CredentialIssueOptions.secret_resource_type_id is still required.
+	Preferred bool
 }
 
 func (b0 CredentialIssueOptionDescriptor_builder) Build() *CredentialIssueOptionDescriptor {
@@ -1013,6 +1064,7 @@ func (b0 CredentialIssueOptionDescriptor_builder) Build() *CredentialIssueOption
 	x.Audiences = b.Audiences
 	x.ResourceMode = b.ResourceMode
 	x.SecretResourceTypeId = b.SecretResourceTypeId
+	x.Preferred = b.Preferred
 	return m0
 }
 
@@ -2670,7 +2722,7 @@ const file_c1_connector_v2_connector_proto_rawDesc = "" +
 	"\x1bpreferred_credential_option\x18\x02 \x01(\x0e21.c1.connector.v2.CapabilityDetailCredentialOptionR\x19preferredCredentialOption\"\xcc\x01\n" +
 	" CredentialDetailsCredentialIssue\x12J\n" +
 	"\aoptions\x18\x01 \x03(\v20.c1.connector.v2.CredentialIssueOptionDescriptorR\aoptions\x12\\\n" +
-	"\x10preferred_option\x18\x02 \x01(\x0e21.c1.connector.v2.CapabilityDetailCredentialOptionR\x0fpreferredOption\"\xae\x04\n" +
+	"\x10preferred_option\x18\x02 \x01(\x0e21.c1.connector.v2.CapabilityDetailCredentialOptionR\x0fpreferredOption\"\xcc\x04\n" +
 	"\x1fCredentialIssueOptionDescriptor\x12I\n" +
 	"\x06option\x18\x01 \x01(\x0e21.c1.connector.v2.CapabilityDetailCredentialOptionR\x06option\x12H\n" +
 	"\fkey_profiles\x18\x02 \x03(\v2%.c1.connector.v2.KeyGenerationProfileR\vkeyProfiles\x12A\n" +
@@ -2681,7 +2733,9 @@ const file_c1_connector_v2_connector_proto_rawDesc = "" +
 	"\taudiences\x18\a \x03(\tR\taudiences\x12L\n" +
 	"\rresource_mode\x18\b \x01(\x0e2'.c1.connector.v2.CredentialResourceModeR\fresourceMode\x12A\n" +
 	"\x17secret_resource_type_id\x18\t \x01(\tB\n" +
-	"\xfaB\ar\x05 \x01(\x80\bR\x14secretResourceTypeId\"t\n" +
+	"\xfaB\ar\x05 \x01(\x80\bR\x14secretResourceTypeId\x12\x1c\n" +
+	"\tpreferred\x18\n" +
+	" \x01(\bR\tpreferred\"t\n" +
 	"\x18IssuanceExpiryCapability\x12+\n" +
 	"\x03min\x18\x01 \x01(\v2\x19.google.protobuf.DurationR\x03min\x12+\n" +
 	"\x03max\x18\x02 \x01(\v2\x19.google.protobuf.DurationR\x03max\"\xa5\x02\n" +
@@ -2753,7 +2807,7 @@ const file_c1_connector_v2_connector_proto_rawDesc = "" +
 	"\rdefault_value\x18\x01 \x03(\v2J.c1.connector.v2.ConnectorAccountCreationSchema.MapField.DefaultValueEntryR\fdefaultValue\x1av\n" +
 	"\x11DefaultValueEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12K\n" +
-	"\x05value\x18\x02 \x01(\v25.c1.connector.v2.ConnectorAccountCreationSchema.FieldR\x05value:\x028\x01*\xd2\x03\n" +
+	"\x05value\x18\x02 \x01(\v25.c1.connector.v2.ConnectorAccountCreationSchema.FieldR\x05value:\x028\x01*\x85\x04\n" +
 	"\n" +
 	"Capability\x12\x1a\n" +
 	"\x16CAPABILITY_UNSPECIFIED\x10\x00\x12\x18\n" +
@@ -2771,7 +2825,8 @@ const file_c1_connector_v2_connector_proto_rawDesc = "" +
 	"\x18CAPABILITY_TARGETED_SYNC\x10\v\x12\x1c\n" +
 	"\x18CAPABILITY_EVENT_FEED_V2\x10\f\x12)\n" +
 	"%CAPABILITY_SERVICE_MODE_TARGETED_SYNC\x10\r\x12\x1f\n" +
-	"\x1bCAPABILITY_CREDENTIAL_ISSUE\x10\x0e*\xf6\x03\n" +
+	"\x1bCAPABILITY_CREDENTIAL_ISSUE\x10\x0e\x121\n" +
+	"-CAPABILITY_CREDENTIAL_ENCRYPTION_JWE_XWING_V1\x10\x10*\xf6\x03\n" +
 	" CapabilityDetailCredentialOption\x123\n" +
 	"/CAPABILITY_DETAIL_CREDENTIAL_OPTION_UNSPECIFIED\x10\x00\x123\n" +
 	"/CAPABILITY_DETAIL_CREDENTIAL_OPTION_NO_PASSWORD\x10\x01\x127\n" +

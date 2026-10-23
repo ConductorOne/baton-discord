@@ -33,6 +33,7 @@ const (
 	OAuth2                  WebFieldType = "OAUTH2"
 	ConnectorDerivedOptions WebFieldType = "CONNECTOR_DERIVED_OPTIONS"
 	FileUpload              WebFieldType = "FILE_UPLOAD"
+	Multiline               WebFieldType = "MULTILINE"
 )
 
 type FieldRule struct {
@@ -266,6 +267,27 @@ func FileUploadField(name string, bonusStrings []string, optional ...fieldOption
 	return field
 }
 
+// MultilineField is a string field rendered as a multiline textarea, for values
+// that span lines such as a PEM-encoded key. Compose with WithIsSecret to get a
+// masked textarea.
+func MultilineField(name string, optional ...fieldOption) SchemaField {
+	field := SchemaField{
+		FieldName:       name,
+		Variant:         StringVariant,
+		DefaultValue:    "",
+		ExportTarget:    ExportTargetGUI,
+		Rules:           FieldRule{},
+		SyncerConfig:    syncerConfig{},
+		ConnectorConfig: connectorConfig{FieldType: Multiline},
+	}
+
+	for _, o := range optional {
+		field = o(field)
+	}
+
+	return field
+}
+
 func RandomField(name string, optional ...fieldOption) SchemaField {
 	field := SchemaField{
 		FieldName:       name,
@@ -349,6 +371,32 @@ func SelectField(name string, options []string, optional ...fieldOption) SchemaF
 		},
 		SyncerConfig:    syncerConfig{},
 		ConnectorConfig: connectorConfig{FieldType: Text},
+	}
+
+	for _, o := range optional {
+		field = o(field)
+	}
+
+	return field
+}
+
+// MultiSelectField is StringSliceField constrained to options. The frontend
+// renders it identically to StringSliceField until it adds a fixed-options
+// view for this variant; validation rejects a value outside options either
+// way.
+func MultiSelectField(name string, options []string, optional ...fieldOption) SchemaField {
+	field := SchemaField{
+		FieldName:    name,
+		Variant:      StringSliceVariant,
+		DefaultValue: []string{},
+		ExportTarget: ExportTargetGUI,
+		Rules: FieldRule{
+			ss: v1_conf.RepeatedStringRules_builder{
+				ItemRules: v1_conf.StringRules_builder{In: options}.Build(),
+			}.Build(),
+		},
+		SyncerConfig:    syncerConfig{},
+		ConnectorConfig: connectorConfig{},
 	}
 
 	for _, o := range optional {

@@ -2,12 +2,12 @@ package pebble
 
 import (
 	"fmt"
-	"os"
 	"runtime"
 	"time"
 
 	"github.com/cockroachdb/pebble/v2"
 	"github.com/cockroachdb/pebble/v2/vfs"
+	"go.uber.org/zap"
 )
 
 // SDKPebbleFormat is the on-disk format version this SDK release
@@ -18,10 +18,8 @@ import (
 const SDKPebbleFormat = pebble.FormatNewest
 
 // Durability controls how aggressively the engine fsyncs writes. The
-// default for production is DurabilitySync; the fresh-sync fast path
-// (which uses pebble.NoSync for in-flight grant batches) falls under
-// DurabilityNoSync because the sync workflow can replay from the
-// connector if the host crashes before checkpoint.
+// default for production is DurabilitySync. Commits that take
+// recordWriteOpts do not consult it.
 type Durability int
 
 const (
@@ -62,8 +60,8 @@ type Options struct {
 	// pebbleLogger, when non-nil, replaces discardPebbleLogger as the
 	// pebble.Options.Logger. Test-only (unexported, set by in-package
 	// tests via an inline Option): fault-injection tests need a Fatalf
-	// that does NOT os.Exit(1) — pebble treats a failed WAL commit as
-	// fatal (db.go commitWrite), and a process exit would kill the
+	// that does not panic — pebble treats a failed WAL commit as
+	// fatal (db.go commitWrite), and an unrecovered panic would kill the
 	// whole test binary where the intent is to observe the "crash" and
 	// assert on what durably survived it. The sweep installs a gate
 	// that parks the goroutine and signals the harness on injected
@@ -85,8 +83,7 @@ type Option func(*Options)
 // Unrefs it in Engine.Close.
 func WithSharedCache(c *pebble.Cache) Option { return func(o *Options) { o.sharedCache = c } }
 
-// WithDurability selects the fsync policy for writes. Default is
-// DurabilitySync.
+// WithDurability sets Options.durability. Default is DurabilitySync.
 func WithDurability(d Durability) Option { return func(o *Options) { o.durability = d } }
 
 // WithReadOnly opens the engine in read-only mode. Save is disallowed.
@@ -138,8 +135,9 @@ func WithLogger(logger pebble.Logger) Option {
 
 // newPebbleOptions builds the *pebble.Options for the Engine. The
 // returned struct is consumed once at pebble.Open; the caller does
-// not retain a reference.
-func newPebbleOptions(o *Options) *pebble.Options {
+// not retain a reference. onCorruption receives every on-disk
+// corruption pebble reports, from reads and background compactions.
+func newPebbleOptions(o *Options, onCorruption func(pebble.DataCorruptionInfo)) *pebble.Options {
 	opts := &pebble.Options{
 		FormatMajorVersion:          SDKPebbleFormat,
 		MemTableSize:                64 << 20,
@@ -181,6 +179,19 @@ func newPebbleOptions(o *Options) *pebble.Options {
 	if o.pebbleLogger != nil {
 		opts.Logger = o.pebbleLogger
 	}
+	// Without a DataCorruption listener pebble calls Logger.Fatalf on the
+	// first corrupt block it reads; with one, the read returns the
+	// corruption error, so a corrupt .c1z fails its open or read instead.
+	opts.EventListener = &pebble.EventListener{
+		DataCorruption: func(info pebble.DataCorruptionInfo) {
+			zap.L().Error("pebble: on-disk corruption",
+				zap.String("path", info.Path),
+				zap.String("bounds", info.Bounds.String()),
+				zap.Error(info.Details),
+			)
+			onCorruption(info)
+		},
+	}
 	// Pausable variant of pebble's default ConcurrencyLimitScheduler so the
 	// engine can suppress automatic compactions during the EndSync-to-close
 	// window, where their output never survives to the saved artifact (see
@@ -208,6 +219,24 @@ func writeOpts(d Durability) *pebble.WriteOptions {
 	return pebble.Sync
 }
 
+// recordWriteOpts is NoSync for every commit that takes it, whether the
+// sync is fresh or bound and regardless of Options.durability.
+// TestBoundSyncRecordWritesDoNotSyncTheWAL pins the Put path.
+//
+// The artifact does not depend on the WAL. CheckpointTo flushes
+// memtables, cuts the checkpoint, and truncateCheckpointWALs zeroes
+// every copied .log, so what ships is the SST bytes the flush produced.
+// Nothing reads the WAL after a crash either: OpenStore unpacks into a
+// temp directory that a dying process orphans and the next process never
+// finds. An fsync here hardens bytes nothing will read.
+//
+// Writes a crash image must hold do not come through here:
+// PutSyncRunRecord says why at its site, and the ledger's in-flight stamp
+// rides the first ledger batch, which BeginCollecting, takeover and
+// BeginPass commit with pebble.Sync before any page. FinishSync flushes
+// and fences the WAL once at EndSync.
+var recordWriteOpts = pebble.NoSync
+
 func defaultOptions() *Options {
 	return &Options{
 		durability:         DurabilitySync,
@@ -216,22 +245,20 @@ func defaultOptions() *Options {
 	}
 }
 
-// discardPebbleLogger silences Pebble's WAL discovery / compaction
-// chatter on Infof, surfaces Errorf to stderr (compaction errors and
-// WAL recovery warnings are operationally significant — silencing them
-// would hide real problems), and terminates on Fatalf via os.Exit(1)
-// to match Pebble's default-logger semantics. We deliberately do NOT
-// panic on Fatalf: a recover() in a gRPC interceptor or HTTP framework
-// could otherwise swallow it and let the program continue on a
-// potentially-corrupted storage engine.
+// discardPebbleLogger drops Pebble's WAL discovery / compaction chatter
+// on Infof and sends Errorf and Fatalf to the global zap logger, since
+// pebble.Logger carries no ctx. Fatalf then panics instead of calling
+// os.Exit, so the failure carries a stack trace. A caller that recovers
+// the panic must stop using the engine.
 type discardPebbleLogger struct{}
 
 func (discardPebbleLogger) Infof(format string, args ...interface{}) {}
 func (discardPebbleLogger) Errorf(format string, args ...interface{}) {
-	fmt.Fprintf(os.Stderr, "pebble: "+format+"\n", args...)
+	zap.L().Error("pebble: " + fmt.Sprintf(format, args...))
 }
 
 func (discardPebbleLogger) Fatalf(format string, args ...interface{}) {
-	fmt.Fprintf(os.Stderr, "pebble FATAL: "+format+"\n", args...)
-	os.Exit(1)
+	msg := "pebble FATAL: " + fmt.Sprintf(format, args...)
+	zap.L().Error(msg)
+	panic(msg)
 }

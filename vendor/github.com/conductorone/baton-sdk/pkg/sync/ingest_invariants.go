@@ -163,13 +163,12 @@ func invariantVerdict(err error) error { return &invariantVerdictError{err: err}
 // TypeScopedGrants) land, they register here against I7 and I8
 // respectively — type-granularity scopes are exactly the shapes those
 // referential checks exist for.
-//
-//nolint:gosec // G101 false positive: "PageTokens" is an annotation name, not a credential.
+// #nosec G101 -- "PageTokens" is an annotation name, not a credential.
 var sideEffectAnnotationCoverage = map[string]string{
-	"c1.connector.v2.GrantExpandable":           "I1: response-loop expansion arming (SetNeedsExpansion) + needs_expansion column persistence; store-derived probe arrives with replay",
-	"c1.connector.v2.ExternalResourceMatch":     "I2: response-loop match arming (SetHasExternalResourcesGrants); store-derived existence-bit repair arrives with replay",
-	"c1.connector.v2.ExternalResourceMatchAll":  "I2: response-loop match arming (SetHasExternalResourcesGrants); store-derived existence-bit repair arrives with replay",
-	"c1.connector.v2.ExternalResourceMatchID":   "I2: response-loop match arming (SetHasExternalResourcesGrants); store-derived existence-bit repair arrives with replay",
+	"c1.connector.v2.GrantExpandable":           "I1: response-loop expansion arming (setFact(factNeedsExpansion)) + needs_expansion column persistence; store-derived probe arrives with replay",
+	"c1.connector.v2.ExternalResourceMatch":     "I2: response-loop match arming (setFact(factHasExternalResourceGrants)); store-derived existence-bit repair arrives with replay",
+	"c1.connector.v2.ExternalResourceMatchAll":  "I2: response-loop match arming (setFact(factHasExternalResourceGrants)); store-derived existence-bit repair arrives with replay",
+	"c1.connector.v2.ExternalResourceMatchID":   "I2: response-loop match arming (setFact(factHasExternalResourceGrants)); store-derived existence-bit repair arrives with replay",
 	"c1.connector.v2.InsertResourceGrants":      "I3: grant→resource referential check post-collection",
 	"c1.connector.v2.ChildResourceType":         "I4: scheduled-set completeness check post-collection",
 	"c1.connector.v2.EntitlementExclusionGroup": "I5: stored-keyspace validation post-collection",
@@ -256,14 +255,13 @@ type IngestInvariantsPolicy struct {
 	// compose through merges.
 	onRetainedInvalid func()
 
-	// I4 evidence: only a process that ran the resources phase can
-	// supply the in-memory scheduled set, so only the syncer sets these.
 	childSchedule     *childScheduleSet
+	scheduledChild    func(context.Context, string, string, string) (bool, error)
 	resourcesPhaseRan bool
 	syncResourceTypes []string
 
 	// I10 evidence: the sync state's spawned-cursor drain read
-	// (state.UndrainedSpawnedCursors), evaluated at check time. Only a
+	// (runState.undrainedSpawnedCursors), evaluated at check time. Only a
 	// caller that runs the scheduler can supply it; nil skips the check
 	// (a store-level pipeline never schedules cursors, so the predicate
 	// has no subject).
@@ -449,8 +447,41 @@ func ingestInvariantHaltStages() []string {
 // store-level function so store-producing pipelines without a syncer
 // (the compactor's expand pass) can enforce the same contract.
 func RunIngestInvariants(ctx context.Context, store connectorstore.Reader, policy IngestInvariantsPolicy) error {
-	_, err := runIngestInvariants(ctx, store, policy)
+	_, err := RunIngestInvariantsWithVerification(ctx, store, policy)
 	return err
+}
+
+// RunIngestInvariantsWithVerification evaluates the invariant pass and returns
+// the verification metadata a store-producing caller must persist after the
+// sync is sealed. It does not write the marker itself: publishing proof before
+// EndSync would allow an unfinished artifact to claim verification.
+func RunIngestInvariantsWithVerification(
+	ctx context.Context,
+	store connectorstore.Reader,
+	policy IngestInvariantsPolicy,
+) (*c1zstore.IngestInvariantVerification, error) {
+	coverage, err := runIngestInvariants(ctx, store, policy)
+	if err != nil {
+		return nil, err
+	}
+	return &c1zstore.IngestInvariantVerification{
+		Generation: IngestInvariantGeneration,
+		Coverage:   coverage,
+		Mode:       ingestInvariantVerificationMode(policy),
+	}, nil
+}
+
+func ingestInvariantVerificationMode(policy IngestInvariantsPolicy) c1zstore.IngestInvariantVerificationMode {
+	switch {
+	case policy.CompactionMerge && policy.FailFast:
+		return c1zstore.IngestInvariantVerificationModeCompactionMergeFailFast
+	case policy.CompactionMerge:
+		return c1zstore.IngestInvariantVerificationModeCompactionMerge
+	case policy.FailFast:
+		return c1zstore.IngestInvariantVerificationModeConnectorFailFast
+	default:
+		return c1zstore.IngestInvariantVerificationModeConnector
+	}
 }
 
 // runIngestInvariants returns the IDs of checks that actually completed. The
@@ -472,9 +503,7 @@ func runIngestInvariants(
 		return nil, fmt.Errorf("ingest invariants: policy.SyncType is required (the zero value would silently skip the full-keyspace invariants; pass the sync's actual type)")
 	}
 	pass := &ingestInvariantsPass{store: store, p: &policy}
-	if facts, ok := store.(dotc1z.IngestInvariantStore); ok {
-		pass.facts = facts
-	}
+	pass.facts = resolveReaderCaps(store).ingestFacts
 	var skippedNoStore []string
 	coverage := make([]string, 0, len(ingestInvariants))
 	for i := range ingestInvariants {
@@ -494,7 +523,7 @@ func runIngestInvariants(
 		if inv.failFastOnly && !policy.FailFast {
 			continue
 		}
-		if inv.requiresScheduleEvidence && (!policy.resourcesPhaseRan || policy.childSchedule == nil) {
+		if inv.requiresScheduleEvidence && (!policy.resourcesPhaseRan || (policy.childSchedule == nil && policy.scheduledChild == nil)) {
 			continue
 		}
 		if err := inv.check(pass, ctx); err != nil {
@@ -583,7 +612,7 @@ func storeCarriesTypeScopedTypes(ctx context.Context, store connectorstore.Reade
 // unfinished artifact the resume machinery will rewrite.
 func (s *syncer) runIngestionInvariants(ctx context.Context) error {
 	s.pendingInvariantVerification = nil
-	if verificationWriter, ok := s.store.SyncMeta().(c1zstore.IngestInvariantVerificationWriter); ok {
+	if verificationWriter := s.caps.ingestVerification; verificationWriter != nil {
 		// Invalidate any proof inherited from an earlier pass before
 		// re-evaluating. A failed rerun must leave the sync unverified.
 		if err := verificationWriter.ClearIngestInvariantVerification(ctx, s.syncID); err != nil {
@@ -592,40 +621,40 @@ func (s *syncer) runIngestionInvariants(ctx context.Context) error {
 	}
 	policy := IngestInvariantsPolicy{
 		ActiveSyncID:      s.getActiveSyncID(),
-		SyncType:          s.syncType,
-		FailFast:          s.failFastInvariants,
-		CompactionMerge:   s.compactionMergedStore,
+		SyncType:          s.cfg.syncType,
+		FailFast:          s.cfg.failFastInvariants,
+		CompactionMerge:   s.cfg.compactionMergedStore,
 		childSchedule:     &s.childSchedule,
 		resourcesPhaseRan: s.resourcesPhaseRanHere,
-		syncResourceTypes: s.syncResourceTypes,
+		syncResourceTypes: s.cfg.syncResourceTypes,
 		onRetainedInvalid: func() {
 			s.ingestFilterStats.blockReplay(ingestQualityReasonRetainedInvalid)
 		},
 	}
-	if st, ok := s.state.(*state); ok {
-		policy.undrainedSpawned = st.UndrainedSpawnedCursors
+	if s.ledgered {
+		policy.scheduledChild = func(ctx context.Context, child, parentType, parent string) (bool, error) {
+			return s.caps.pageLedger.HasScheduledWork(ctx, "resource:"+childScheduleKey(child, parentType, parent))
+		}
 	}
-	if s.testIngestHaltHook != nil {
-		policy.halt = s.testIngestHaltHook
+	// Leaving the predicate nil is how the policy says "no scheduler
+	// evidence, skip I10". The nil check has to be here: a bound method
+	// value on a nil *runState is itself non-nil, so assigning
+	// unconditionally would sail past checkSpawnedCursorDrain's nil test
+	// and dereference the receiver at r.mu.RLock(). Sync assigns s.run
+	// before this pass, so only a hand-assembled syncer takes the false
+	// branch (TestRunIngestionInvariantsI10EvidenceWiring).
+
+	if s.run != nil {
+		policy.undrainedSpawned = s.run.undrainedSpawnedCursors
 	}
-	coverage, err := runIngestInvariants(ctx, s.store, policy)
+	if s.testHooks.ingestHaltHook != nil {
+		policy.halt = s.testHooks.ingestHaltHook
+	}
+	verification, err := RunIngestInvariantsWithVerification(ctx, s.store, policy)
 	if err != nil {
 		return err
 	}
-	mode := c1zstore.IngestInvariantVerificationModeConnector
-	switch {
-	case policy.CompactionMerge && policy.FailFast:
-		mode = c1zstore.IngestInvariantVerificationModeCompactionMergeFailFast
-	case policy.CompactionMerge:
-		mode = c1zstore.IngestInvariantVerificationModeCompactionMerge
-	case policy.FailFast:
-		mode = c1zstore.IngestInvariantVerificationModeConnectorFailFast
-	}
-	s.pendingInvariantVerification = &c1zstore.IngestInvariantVerification{
-		Generation: IngestInvariantGeneration,
-		Coverage:   coverage,
-		Mode:       mode,
-	}
+	s.pendingInvariantVerification = verification
 	return nil
 }
 
@@ -643,8 +672,8 @@ func (s *syncer) persistIngestInvariantVerification(ctx context.Context) error {
 	}
 	verification := *s.pendingInvariantVerification
 	s.pendingInvariantVerification = nil
-	verificationWriter, ok := s.store.SyncMeta().(c1zstore.IngestInvariantVerificationWriter)
-	if !ok {
+	verificationWriter := s.caps.ingestVerification
+	if verificationWriter == nil {
 		// SyncMeta predates verification metadata and is implemented outside
 		// this repository. Preserve its established behavior; the absent
 		// marker truthfully distinguishes it from built-in verified stores.
@@ -863,19 +892,10 @@ func (pass *ingestInvariantsPass) checkStoredExclusionGroups(ctx context.Context
 	return nil
 }
 
-// checkChildScheduling is invariant I4: every stored resource carrying a
-// ChildResourceType annotation (and passing the resource-type filter)
-// must have had its child action scheduled. Check-only — scheduling
-// cannot be derived after the fact (an executed child action that
-// returned zero rows leaves no store evidence). Fail-fast only (the
-// table gates it): the check costs a full post-collection resource scan
-// (value decode + annotation walk per row) and in default mode a
-// violation was only ever a warning — a bad trade at whale scale.
+// I4 needs scheduling evidence even for empty child responses. Its full
+// resource scan runs only in fail-fast mode.
 func (pass *ingestInvariantsPass) checkChildScheduling(ctx context.Context) error {
-	if !pass.p.resourcesPhaseRan || pass.p.childSchedule == nil {
-		// Resumed past the resources phase (or a caller with no
-		// scheduling evidence at all): the scheduled set from the prior
-		// process is gone; the predicate is unverifiable.
+	if !pass.p.resourcesPhaseRan || (pass.p.childSchedule == nil && pass.p.scheduledChild == nil) {
 		return nil
 	}
 	syncResourceTypeMap := make(map[string]bool, len(pass.p.syncResourceTypes))
@@ -910,7 +930,17 @@ func (pass *ingestInvariantsPass) checkChildScheduling(ctx context.Context) erro
 				if len(pass.p.syncResourceTypes) > 0 && !syncResourceTypeMap[childType] {
 					continue
 				}
-				if !pass.p.childSchedule.has(childType, r.GetId().GetResourceType(), r.GetId().GetResource()) {
+				scheduled := false
+				if pass.p.scheduledChild != nil {
+					var err error
+					scheduled, err = pass.p.scheduledChild(ctx, childType, r.GetId().GetResourceType(), r.GetId().GetResource())
+					if err != nil {
+						return err
+					}
+				} else {
+					scheduled = pass.p.childSchedule.has(childType, r.GetId().GetResourceType(), r.GetId().GetResource())
+				}
+				if !scheduled {
 					violations = append(violations, fmt.Sprintf("%s under %s/%s",
 						childType, r.GetId().GetResourceType(), r.GetId().GetResource()))
 				}
@@ -949,7 +979,7 @@ func (pass *ingestInvariantsPass) checkSpawnedCursorDrain(ctx context.Context) e
 	if len(undrained) == 0 {
 		return nil
 	}
-	// Already sorted by action ID (state.UndrainedSpawnedCursors); the
+	// Already sorted by action ID (runState.undrainedSpawnedCursors); the
 	// verdict text is byte-stable.
 	return invariantVerdict(fmt.Errorf(
 		"ingest invariant I10 violated: %d spawned page-token cursor(s) were admitted to the schedule but never drained (scheduler bug — the sync is missing their data): %v",

@@ -14,14 +14,13 @@
 // is a caller that forgot an obligation; this package makes the
 // obligation unforgettable by construction.
 //
-// What this package deliberately does NOT own: the engine's write
-// BARRIER (writeMu / writeWG / closing / sealed / checkpointMu) stays
-// in the pebble package. The barrier is lifecycle policy — who may
-// write when — while rawdb is write mechanics — what a write must do.
-// Callers arrive here already inside withWrite/withWriteAllowSealed;
-// the known barrier bypasses (the synth-layer worker's background
-// ingest, the compactor's DB() writes, cleanup's compaction driver)
-// are enumerated on the operations that serve them.
+// What this package deliberately does NOT own: the engine's write lock
+// (writeMu) and the lifecycle snapshot it guards stay in the pebble
+// package. The lock is lifecycle policy — who may write when — while
+// rawdb is write mechanics — what a write must do. Callers arrive here
+// already holding writeMu (TestWriteMuHolders checks that statically);
+// the one bypass, the compactor's DB() writes, is fenced by call order
+// and noted on the operations that serve it.
 //
 // Reads are exposed liberally (Get / NewIter / Metrics): the bug class
 // lives on the write side, and a read choke point would only add
@@ -31,6 +30,7 @@ package rawdb
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"sync/atomic"
 	"testing"
@@ -54,10 +54,14 @@ type DB struct {
 	// means an in-process EndSync rebuilds while a crash+resume
 	// silently skips the rebuild; cleared flag + present key forces a
 	// spurious rebuild at the next open. ArmDeferredGrantIndex and
-	// ClearDeferredGrantIndexMarker maintain the agreement on both
+	// ClearDeferredGrantIndexMarkers maintain the agreement on both
 	// edges (durable half first; rollback/abort on failure), and
 	// RestoreDeferredIdxPending re-arms from the key at Open.
 	deferredIdxPending atomic.Bool
+	// deferredNeedsExpansionPending is armed only by trusted grant imports,
+	// which cannot clean a prior page's by_needs_expansion entry without a
+	// destination read.
+	deferredNeedsExpansionPending atomic.Bool
 
 	// grantDigestsPresent reports whether the digest keyspace holds
 	// any nodes — the gate for the record ops' digest-invalidation
@@ -68,12 +72,76 @@ type DB struct {
 	// build, cleared by the engine's drop/reset paths.
 	grantDigestsPresent atomic.Bool
 
+	// sourceScopeMayExist gates the record ops' source-scope index
+	// obligations, the same shape as grantDigestsPresent: false
+	// certifies that NO by_source_scope index entry exists in any of
+	// the three families, so overwrite/delete cleanup owes nothing and
+	// the prior-value scope scans (and the entitlement write path's
+	// read-before-write, whose only purpose is feeding them) can be
+	// skipped — the ordinary unscoped sync pays exactly the pre-scope
+	// write cost. Conservatively true is always safe; false with
+	// entries present is not.
+	//
+	// Transitions: probed at Open (ProbeSourceScopeMayExist), flipped
+	// true by stageSourceScopeChange the moment a stamped record is
+	// staged (self-healing — no caller coordination can be forgotten),
+	// armed by FoldBatch.Set when a raw compactor write actually stages
+	// a borrowed scope-index key the typed ops never see, re-probed by
+	// bulk import's Finish after its SST ingest (grantIndexKeys emits
+	// scope entries for stamped records; see the ingest-family
+	// obligation in families.go), and cleared only by the engine's
+	// ResetForNewSync wipe, which excises the index families wholesale.
+	// Deliberately NOT cleared by replay-state invalidation: a failed
+	// invalidation commit after a clear would leave false-with-entries,
+	// and stale-true only costs perf.
+	//
+	// Stamped primary rows WITHOUT index entries (the post-invalidation
+	// state on rebuild-compacted stores) keep the flag false at open:
+	// that is sound because everything the flag gates exists to
+	// maintain index entries, and there are none to maintain.
+	sourceScopeMayExist atomic.Bool
+
 	// testArmDeferredMarkerHook / testClearDeferredMarkerHook run
 	// before the marker's durable commit / delete — the in-process
 	// analogs of those writes failing. Installed only via
 	// SetDeferredMarkerTestHooks (testing-gated).
 	testArmDeferredMarkerHook   func() error
 	testClearDeferredMarkerHook func() error
+	testRecordCommitHook        func() error
+
+	// poisonObserver, when set, is invoked once per distinct poison
+	// event AFTER the batch that staged it commits (CO-015 requires
+	// poison events logged with scope, kind, and cause; the marker
+	// itself carries no value). Installed once by the engine at Open,
+	// before any concurrent use — not synchronized.
+	poisonObserver func(PoisonEvent)
+
+	// acct is the ride-along resource ledger for family batches:
+	// every New*Batch increments its family counter and the batch's
+	// first Close decrements it, so Close can report an unreleased
+	// batch as a leak the same way pebble itself reports leaked
+	// iterators and Get closers (via readState/version refs). Pebble
+	// does not track batches, so this is the missing third of the
+	// resource-leak oracle.
+	acct batchAccounting
+}
+
+// batchAccounting counts outstanding (minted, not yet closed) family
+// batches. Always-on: the atomics are contention-free, and prod leak
+// visibility matches pebble's own iterator accounting.
+type batchAccounting struct {
+	record  atomic.Int64
+	session atomic.Int64
+	digest  atomic.Int64
+	fold    atomic.Int64
+}
+
+func (a *batchAccounting) leakError() error {
+	r, s, dg, f := a.record.Load(), a.session.Load(), a.digest.Load(), a.fold.Load()
+	if r == 0 && s == 0 && dg == 0 && f == 0 {
+		return nil
+	}
+	return fmt.Errorf("rawdb: unreleased family batches at Close: record=%d session=%d digest=%d fold=%d", r, s, dg, f)
 }
 
 // Open opens the pebble database at dir. opts is consumed by
@@ -92,8 +160,13 @@ func Open(dir string, opts *pebble.Options, fs vfs.FS) (*DB, error) {
 }
 
 // Close closes the underlying pebble.DB. The engine's teardown
-// ordering (write barrier, worker drain) is the caller's job.
-func (d *DB) Close() error { return d.db.Close() }
+// ordering (write barrier, worker drain) is the caller's job. Like
+// pebble's own Close (which reports leaked iterators and Get closers
+// through version refcounts), it reports any family batch minted but
+// never released — the DB still closes; the error names the leak.
+func (d *DB) Close() error {
+	return errors.Join(d.acct.leakError(), d.db.Close())
+}
 
 // FS returns the filesystem the DB's IO rides on. SSTs staged for
 // Ingest/IngestAndExcise must be created through it.
@@ -143,6 +216,12 @@ func (d *DB) UnsafeForTesting() *pebble.DB {
 // is owed (see the field doc).
 func (d *DB) DeferredIdxPending() bool { return d.deferredIdxPending.Load() }
 
+// DeferredNeedsExpansionPending reports whether trusted imports require a
+// by_needs_expansion rebuild.
+func (d *DB) DeferredNeedsExpansionPending() bool {
+	return d.deferredNeedsExpansionPending.Load()
+}
+
 // ArmDeferredGrantIndex durably arms the deferred-index rebuild
 // marker: CAS on the in-memory flag (repeat calls are one atomic
 // load — the deferred write paths call this per record), then the
@@ -171,15 +250,40 @@ func (d *DB) armDeferredMarkerDurably() error {
 	return d.set(DeferredIdxPendingKey(), nil, pebble.Sync)
 }
 
-// ClearDeferredGrantIndexMarker drops both halves of the marker after
-// a successful rebuild. Durable delete FIRST, flag second — the same
-// agreement contract as the arm side: a failed delete leaves BOTH
-// armed, so the retried EndSync re-runs the (idempotent) rebuild and
-// retries the clear, never the flag-cleared/key-present split that
-// skipped the retry's rebuild and left a stale key forcing a spurious
-// rebuild at the next open. The caller owns the write barrier (the
-// engine runs this inside EndSync's sealed finalize window).
-func (d *DB) ClearDeferredGrantIndexMarker() error {
+// ArmDeferredNeedsExpansionIndex durably records the additional index
+// obligation created by trusted grant imports.
+func (d *DB) ArmDeferredNeedsExpansionIndex() error {
+	if !d.deferredNeedsExpansionPending.CompareAndSwap(false, true) {
+		return nil
+	}
+	if d.testArmDeferredMarkerHook != nil {
+		if err := d.testArmDeferredMarkerHook(); err != nil {
+			d.deferredNeedsExpansionPending.Store(false)
+			return err
+		}
+	}
+	if err := d.set(DeferredNeedsExpansionPendingKey(), nil, pebble.Sync); err != nil {
+		d.deferredNeedsExpansionPending.Store(false)
+		return err
+	}
+	return nil
+}
+
+// ClearDeferredGrantIndexMarkers clears each durable marker before its
+// in-memory flag. The needs-expansion marker is cleared first, so a partial
+// failure can only leave the broader by_principal rebuild pending.
+func (d *DB) ClearDeferredGrantIndexMarkers() error {
+	if d.deferredNeedsExpansionPending.Load() {
+		if d.testClearDeferredMarkerHook != nil {
+			if err := d.testClearDeferredMarkerHook(); err != nil {
+				return err
+			}
+		}
+		if err := d.delete(DeferredNeedsExpansionPendingKey(), pebble.Sync); err != nil {
+			return err
+		}
+		d.deferredNeedsExpansionPending.Store(false)
+	}
 	if d.testClearDeferredMarkerHook != nil {
 		if err := d.testClearDeferredMarkerHook(); err != nil {
 			return err
@@ -202,12 +306,22 @@ func (d *DB) RestoreDeferredIdxPending() error {
 	case err == nil:
 		closer.Close()
 		d.deferredIdxPending.Store(true)
-		return nil
 	case errors.Is(err, pebble.ErrNotFound):
-		return nil
+		d.deferredIdxPending.Store(false)
 	default:
 		return err
 	}
+	_, closer, err = d.db.Get(DeferredNeedsExpansionPendingKey())
+	switch {
+	case err == nil:
+		closer.Close()
+		d.deferredNeedsExpansionPending.Store(true)
+	case errors.Is(err, pebble.ErrNotFound):
+		d.deferredNeedsExpansionPending.Store(false)
+	default:
+		return err
+	}
+	return nil
 }
 
 // GrantDigestsPresent reports whether digest state exists (the record
@@ -220,9 +334,11 @@ func (d *DB) GrantDigestsPresent() bool { return d.grantDigestsPresent.Load() }
 func (d *DB) SetGrantDigestsPresent(present bool) { d.grantDigestsPresent.Store(present) }
 
 // ProbeGrantDigestsPresent initializes the presence flag with one
-// bounded seek over the digest keyspace (the Open-time probe).
+// bounded seek over the digest NODE keyspace (the Open-time probe).
+// The ABI stamp's metadata sub-range is outside the bounds: a file
+// holding only a leftover stamp has no digest state to invalidate.
 func (d *DB) ProbeGrantDigestsPresent() error {
-	lo, hi := DigestKeyspaceBounds()
+	lo, hi := DigestNodeKeyspaceBounds()
 	iter, err := d.db.NewIter(&pebble.IterOptions{LowerBound: lo, UpperBound: hi})
 	if err != nil {
 		return err
@@ -230,6 +346,45 @@ func (d *DB) ProbeGrantDigestsPresent() error {
 	defer iter.Close()
 	d.grantDigestsPresent.Store(iter.First())
 	return iter.Error()
+}
+
+// SourceScopeMayExist reports whether any by_source_scope index entry
+// may exist (the record ops' scope-obligation gate; see the field doc).
+func (d *DB) SourceScopeMayExist() bool { return d.sourceScopeMayExist.Load() }
+
+// SetSourceScopeMayExist flips the scope-presence gate. The engine owns
+// the false transition (ResetForNewSync, after the index families are
+// excised); true transitions happen inside this package on staging.
+func (d *DB) SetSourceScopeMayExist(present bool) { d.sourceScopeMayExist.Store(present) }
+
+// ProbeSourceScopeMayExist initializes the scope-presence gate with one
+// bounded seek per by_source_scope family (the Open-time probe).
+func (d *DB) ProbeSourceScopeMayExist() error {
+	for _, indexID := range []byte{
+		IdxResourceBySourceScope,
+		IdxEntitlementBySourceScope,
+		IdxGrantBySourceScope,
+	} {
+		lo := []byte{VersionV3, TypeIndex, indexID}
+		iter, err := d.db.NewIter(&pebble.IterOptions{LowerBound: lo, UpperBound: UpperBound(lo)})
+		if err != nil {
+			return err
+		}
+		found := iter.First()
+		if err := iter.Error(); err != nil {
+			iter.Close()
+			return err
+		}
+		if err := iter.Close(); err != nil {
+			return err
+		}
+		if found {
+			d.sourceScopeMayExist.Store(true)
+			return nil
+		}
+	}
+	d.sourceScopeMayExist.Store(false)
+	return nil
 }
 
 // SetDeferredMarkerTestHooks installs failure-injection hooks for the
@@ -243,6 +398,34 @@ func (d *DB) SetDeferredMarkerTestHooks(armHook, clearHook func() error) {
 	d.testClearDeferredMarkerHook = clearHook
 }
 
+// SetRecordCommitTestHook installs a failure immediately before every typed
+// RecordBatch commit. It lets obligation tests cover ordinary resource,
+// entitlement, and grant mutation paths through their shared choke point
+// instead of adding incomplete engine-path-specific seams. Test-only; pass nil
+// to uninstall.
+func (d *DB) SetRecordCommitTestHook(hook func() error) {
+	if !testing.Testing() {
+		panic("rawdb.SetRecordCommitTestHook: called outside a test binary")
+	}
+	d.testRecordCommitHook = hook
+}
+
+// PoisonEvent describes one staged source-cache poison marker: the
+// (row_kind, scope) that lost a row and why. Delivered to the poison
+// observer after the staging batch commits.
+type PoisonEvent struct {
+	RowKind  string
+	ScopeKey string
+	Cause    string
+}
+
+// SetPoisonObserver installs the post-commit poison event callback.
+// Must be called before the DB sees concurrent use (the engine installs
+// it at Open); pass nil to uninstall.
+func (d *DB) SetPoisonObserver(fn func(PoisonEvent)) {
+	d.poisonObserver = fn
+}
+
 // === lifecycle operations (write-class, engine-lifecycle-named) ===
 
 // FlushMemtables forces the memtable out to L0 (pebble.DB.Flush,
@@ -251,12 +434,11 @@ func (d *DB) SetDeferredMarkerTestHooks(armHook, clearHook func() error) {
 func (d *DB) FlushMemtables() error { return d.db.Flush() }
 
 // Checkpoint cuts a pebble checkpoint into destDir (created by pebble,
-// must not exist). Caller holds the engine's checkpoint barrier.
+// must not exist). Caller holds the engine's writeMu.
 func (d *DB) Checkpoint(destDir string) error { return d.db.Checkpoint(destDir) }
 
 // Compact manually compacts the given key range. Serves cleanup's
-// space-reclaim pass; deliberately barrier-free at the engine layer
-// (see the checkpointMu inventory).
+// space-reclaim pass.
 func (d *DB) Compact(ctx context.Context, start, end []byte, parallel bool) error {
 	return d.db.Compact(ctx, start, end, parallel)
 }
