@@ -40,11 +40,18 @@ const (
 type SyncType int32
 
 const (
-	SyncType_SYNC_TYPE_UNSPECIFIED       SyncType = 0
-	SyncType_SYNC_TYPE_FULL              SyncType = 1
-	SyncType_SYNC_TYPE_PARTIAL           SyncType = 2
-	SyncType_SYNC_TYPE_RESOURCES_ONLY    SyncType = 3
-	SyncType_SYNC_TYPE_PARTIAL_UPSERTS   SyncType = 4
+	SyncType_SYNC_TYPE_UNSPECIFIED    SyncType = 0
+	SyncType_SYNC_TYPE_FULL           SyncType = 1
+	SyncType_SYNC_TYPE_PARTIAL        SyncType = 2
+	SyncType_SYNC_TYPE_RESOURCES_ONLY SyncType = 3
+	// Deprecated: 4 and 5 were the diff-sync pair; diff-sync support was
+	// removed and nothing produces or consumes them. Kept (rather than
+	// reserved) so the buf breaking policy can keep forbidding enum value
+	// deletion repo-wide.
+	//
+	// Deprecated: Marked as deprecated in c1/storage/v3/records.proto.
+	SyncType_SYNC_TYPE_PARTIAL_UPSERTS SyncType = 4
+	// Deprecated: Marked as deprecated in c1/storage/v3/records.proto.
 	SyncType_SYNC_TYPE_PARTIAL_DELETIONS SyncType = 5
 )
 
@@ -97,6 +104,7 @@ const (
 	StatusRecord_RESOURCE_STATUS_ENABLED     StatusRecord_ResourceStatus = 1
 	StatusRecord_RESOURCE_STATUS_DISABLED    StatusRecord_ResourceStatus = 2
 	StatusRecord_RESOURCE_STATUS_DELETED     StatusRecord_ResourceStatus = 3
+	StatusRecord_RESOURCE_STATUS_PENDING     StatusRecord_ResourceStatus = 4
 )
 
 // Enum value maps for StatusRecord_ResourceStatus.
@@ -106,12 +114,14 @@ var (
 		1: "RESOURCE_STATUS_ENABLED",
 		2: "RESOURCE_STATUS_DISABLED",
 		3: "RESOURCE_STATUS_DELETED",
+		4: "RESOURCE_STATUS_PENDING",
 	}
 	StatusRecord_ResourceStatus_value = map[string]int32{
 		"RESOURCE_STATUS_UNSPECIFIED": 0,
 		"RESOURCE_STATUS_ENABLED":     1,
 		"RESOURCE_STATUS_DISABLED":    2,
 		"RESOURCE_STATUS_DELETED":     3,
+		"RESOURCE_STATUS_PENDING":     4,
 	}
 )
 
@@ -564,20 +574,21 @@ func (b0 ResourceTypeRecord_builder) Build() *ResourceTypeRecord {
 }
 
 type ResourceRecord struct {
-	state                     protoimpl.MessageState `protogen:"opaque.v1"`
-	xxx_hidden_ResourceTypeId string                 `protobuf:"bytes,2,opt,name=resource_type_id,json=resourceTypeId,proto3"`
-	xxx_hidden_ResourceId     string                 `protobuf:"bytes,3,opt,name=resource_id,json=resourceId,proto3"`
-	xxx_hidden_DisplayName    string                 `protobuf:"bytes,4,opt,name=display_name,json=displayName,proto3"`
-	xxx_hidden_Description    string                 `protobuf:"bytes,5,opt,name=description,proto3"`
-	xxx_hidden_Parent         *ResourceRef           `protobuf:"bytes,6,opt,name=parent,proto3"`
-	xxx_hidden_Annotations    *[]*anypb.Any          `protobuf:"bytes,7,rep,name=annotations,proto3"`
-	xxx_hidden_DiscoveredAt   *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=discovered_at,json=discoveredAt,proto3"`
-	xxx_hidden_Profile        *structpb.Struct       `protobuf:"bytes,9,opt,name=profile,proto3"`
-	xxx_hidden_Status         *StatusRecord          `protobuf:"bytes,10,opt,name=status,proto3"`
-	xxx_hidden_CreatedAt      *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=created_at,json=createdAt,proto3"`
-	xxx_hidden_SourceScopeKey string                 `protobuf:"bytes,12,opt,name=source_scope_key,json=sourceScopeKey,proto3"`
-	unknownFields             protoimpl.UnknownFields
-	sizeCache                 protoimpl.SizeCache
+	state                          protoimpl.MessageState `protogen:"opaque.v1"`
+	xxx_hidden_ResourceTypeId      string                 `protobuf:"bytes,2,opt,name=resource_type_id,json=resourceTypeId,proto3"`
+	xxx_hidden_ResourceId          string                 `protobuf:"bytes,3,opt,name=resource_id,json=resourceId,proto3"`
+	xxx_hidden_DisplayName         string                 `protobuf:"bytes,4,opt,name=display_name,json=displayName,proto3"`
+	xxx_hidden_Description         string                 `protobuf:"bytes,5,opt,name=description,proto3"`
+	xxx_hidden_Parent              *ResourceRef           `protobuf:"bytes,6,opt,name=parent,proto3"`
+	xxx_hidden_Annotations         *[]*anypb.Any          `protobuf:"bytes,7,rep,name=annotations,proto3"`
+	xxx_hidden_DiscoveredAt        *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=discovered_at,json=discoveredAt,proto3"`
+	xxx_hidden_Profile             *structpb.Struct       `protobuf:"bytes,9,opt,name=profile,proto3"`
+	xxx_hidden_Status              *StatusRecord          `protobuf:"bytes,10,opt,name=status,proto3"`
+	xxx_hidden_CreatedAt           *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=created_at,json=createdAt,proto3"`
+	xxx_hidden_SourceScopeKey      string                 `protobuf:"bytes,12,opt,name=source_scope_key,json=sourceScopeKey,proto3"`
+	xxx_hidden_IconAssetExternalId string                 `protobuf:"bytes,13,opt,name=icon_asset_external_id,json=iconAssetExternalId,proto3"`
+	unknownFields                  protoimpl.UnknownFields
+	sizeCache                      protoimpl.SizeCache
 }
 
 func (x *ResourceRecord) Reset() {
@@ -684,6 +695,13 @@ func (x *ResourceRecord) GetSourceScopeKey() string {
 	return ""
 }
 
+func (x *ResourceRecord) GetIconAssetExternalId() string {
+	if x != nil {
+		return x.xxx_hidden_IconAssetExternalId
+	}
+	return ""
+}
+
 func (x *ResourceRecord) SetResourceTypeId(v string) {
 	x.xxx_hidden_ResourceTypeId = v
 }
@@ -726,6 +744,10 @@ func (x *ResourceRecord) SetCreatedAt(v *timestamppb.Timestamp) {
 
 func (x *ResourceRecord) SetSourceScopeKey(v string) {
 	x.xxx_hidden_SourceScopeKey = v
+}
+
+func (x *ResourceRecord) SetIconAssetExternalId(v string) {
+	x.xxx_hidden_IconAssetExternalId = v
 }
 
 func (x *ResourceRecord) HasParent() bool {
@@ -805,6 +827,8 @@ type ResourceRecord_builder struct {
 	// to 12 when profile/status/created_at (9-11) landed on main first.
 	// No artifact was ever written with the old number.
 	SourceScopeKey string
+	// External ID of the resource icon asset. This must point to an asset that is an image.
+	IconAssetExternalId string
 }
 
 func (b0 ResourceRecord_builder) Build() *ResourceRecord {
@@ -822,6 +846,7 @@ func (b0 ResourceRecord_builder) Build() *ResourceRecord {
 	x.xxx_hidden_Status = b.Status
 	x.xxx_hidden_CreatedAt = b.CreatedAt
 	x.xxx_hidden_SourceScopeKey = b.SourceScopeKey
+	x.xxx_hidden_IconAssetExternalId = b.IconAssetExternalId
 	return m0
 }
 
@@ -1415,7 +1440,6 @@ type SyncRunRecord struct {
 	xxx_hidden_EndedAt                   *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=ended_at,json=endedAt,proto3"`
 	xxx_hidden_SyncToken                 string                 `protobuf:"bytes,6,opt,name=sync_token,json=syncToken,proto3"`
 	xxx_hidden_SupportsDiff              bool                   `protobuf:"varint,7,opt,name=supports_diff,json=supportsDiff,proto3"`
-	xxx_hidden_LinkedSyncId              string                 `protobuf:"bytes,8,opt,name=linked_sync_id,json=linkedSyncId,proto3"`
 	xxx_hidden_Compacted                 bool                   `protobuf:"varint,9,opt,name=compacted,proto3"`
 	xxx_hidden_IngestInvariantGeneration string                 `protobuf:"bytes,10,opt,name=ingest_invariant_generation,json=ingestInvariantGeneration,proto3"`
 	xxx_hidden_IngestInvariantCoverage   []string               `protobuf:"bytes,11,rep,name=ingest_invariant_coverage,json=ingestInvariantCoverage,proto3"`
@@ -1498,13 +1522,6 @@ func (x *SyncRunRecord) GetSupportsDiff() bool {
 	return false
 }
 
-func (x *SyncRunRecord) GetLinkedSyncId() string {
-	if x != nil {
-		return x.xxx_hidden_LinkedSyncId
-	}
-	return ""
-}
-
 func (x *SyncRunRecord) GetCompacted() bool {
 	if x != nil {
 		return x.xxx_hidden_Compacted
@@ -1561,10 +1578,6 @@ func (x *SyncRunRecord) SetSupportsDiff(v bool) {
 	x.xxx_hidden_SupportsDiff = v
 }
 
-func (x *SyncRunRecord) SetLinkedSyncId(v string) {
-	x.xxx_hidden_LinkedSyncId = v
-}
-
 func (x *SyncRunRecord) SetCompacted(v bool) {
 	x.xxx_hidden_Compacted = v
 }
@@ -1612,8 +1625,11 @@ type SyncRunRecord_builder struct {
 	StartedAt    *timestamppb.Timestamp
 	EndedAt      *timestamppb.Timestamp
 	SyncToken    string
+	// supports_diff marks a sync whose data collection completed with
+	// SQL-layer grant metadata populated. The name is historical (it once
+	// gated diff-sync generation, since removed); today it gates
+	// `baton rollback-expansion`.
 	SupportsDiff bool
-	LinkedSyncId string
 	// compacted marks a sync produced by compaction (fold or rebuild)
 	// rather than by a real connector run. Compacted artifacts are
 	// keep-newer UPSERT merges — base rows a newer input deleted survive —
@@ -1653,7 +1669,6 @@ func (b0 SyncRunRecord_builder) Build() *SyncRunRecord {
 	x.xxx_hidden_EndedAt = b.EndedAt
 	x.xxx_hidden_SyncToken = b.SyncToken
 	x.xxx_hidden_SupportsDiff = b.SupportsDiff
-	x.xxx_hidden_LinkedSyncId = b.LinkedSyncId
 	x.xxx_hidden_Compacted = b.Compacted
 	x.xxx_hidden_IngestInvariantGeneration = b.IngestInvariantGeneration
 	x.xxx_hidden_IngestInvariantCoverage = b.IngestInvariantCoverage
@@ -1682,6 +1697,7 @@ type SyncStatsRecord struct {
 	xxx_hidden_ConnectorCallStats              map[string]*CallStat   `protobuf:"bytes,11,rep,name=connector_call_stats,json=connectorCallStats,proto3" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	xxx_hidden_SessionStoreStats               map[string]*CallStat   `protobuf:"bytes,12,rep,name=session_store_stats,json=sessionStoreStats,proto3" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	xxx_hidden_IngestQuality                   *IngestQualityStats    `protobuf:"bytes,13,opt,name=ingest_quality,json=ingestQuality,proto3"`
+	xxx_hidden_Compaction                      *CompactionProvenance  `protobuf:"bytes,14,opt,name=compaction,proto3"`
 	xxx_hidden_WrittenAt                       *timestamppb.Timestamp `protobuf:"bytes,100,opt,name=written_at,json=writtenAt,proto3"`
 	unknownFields                              protoimpl.UnknownFields
 	sizeCache                                  protoimpl.SizeCache
@@ -1803,6 +1819,13 @@ func (x *SyncStatsRecord) GetIngestQuality() *IngestQualityStats {
 	return nil
 }
 
+func (x *SyncStatsRecord) GetCompaction() *CompactionProvenance {
+	if x != nil {
+		return x.xxx_hidden_Compaction
+	}
+	return nil
+}
+
 func (x *SyncStatsRecord) GetWrittenAt() *timestamppb.Timestamp {
 	if x != nil {
 		return x.xxx_hidden_WrittenAt
@@ -1862,6 +1885,10 @@ func (x *SyncStatsRecord) SetIngestQuality(v *IngestQualityStats) {
 	x.xxx_hidden_IngestQuality = v
 }
 
+func (x *SyncStatsRecord) SetCompaction(v *CompactionProvenance) {
+	x.xxx_hidden_Compaction = v
+}
+
 func (x *SyncStatsRecord) SetWrittenAt(v *timestamppb.Timestamp) {
 	x.xxx_hidden_WrittenAt = v
 }
@@ -1873,6 +1900,13 @@ func (x *SyncStatsRecord) HasIngestQuality() bool {
 	return x.xxx_hidden_IngestQuality != nil
 }
 
+func (x *SyncStatsRecord) HasCompaction() bool {
+	if x == nil {
+		return false
+	}
+	return x.xxx_hidden_Compaction != nil
+}
+
 func (x *SyncStatsRecord) HasWrittenAt() bool {
 	if x == nil {
 		return false
@@ -1882,6 +1916,10 @@ func (x *SyncStatsRecord) HasWrittenAt() bool {
 
 func (x *SyncStatsRecord) ClearIngestQuality() {
 	x.xxx_hidden_IngestQuality = nil
+}
+
+func (x *SyncStatsRecord) ClearCompaction() {
+	x.xxx_hidden_Compaction = nil
 }
 
 func (x *SyncStatsRecord) ClearWrittenAt() {
@@ -1906,10 +1944,11 @@ type SyncStatsRecord_builder struct {
 	GrantsByEntitlementResourceType map[string]int64
 	// Per-resource-type entitlements counts: keyed by resource_type_id.
 	EntitlementsByResourceType map[string]int64
-	// Timing / call stats lifted from the syncer token at EndSync.
-	// Mirror of c1.reader.v2.SyncStats fields 9–11 (storage cannot import
-	// reader protos; CallStat is duplicated below). Compacted syncs fold
-	// partial timings into the token's top-level maps at compaction time.
+	// Timing / call stats. Ledgered syncs hand these to the engine directly
+	// at EndSync (the fold of every LedgerCounterBucket); token-only
+	// syncs still have them lifted from the syncer token. Mirror of
+	// c1.reader.v2.SyncStats fields 9–11 (storage cannot import reader
+	// protos; CallStat is duplicated below). Compacted outputs omit these maps.
 	StepDurationsMs    map[string]int64
 	ConnectorCallStats map[string]*CallStat
 	SessionStoreStats  map[string]*CallStat
@@ -1918,7 +1957,10 @@ type SyncStatsRecord_builder struct {
 	// Compacted syncs omit this field: source-cache replay is not supported for
 	// compacted artifacts and ingestion counters do not compose through merges.
 	IngestQuality *IngestQualityStats
-	WrittenAt     *timestamppb.Timestamp
+	// Compaction provenance, set only on compacted outputs (previously a
+	// section of the sync token; the token is not written for ledgered syncs).
+	Compaction *CompactionProvenance
+	WrittenAt  *timestamppb.Timestamp
 }
 
 func (b0 SyncStatsRecord_builder) Build() *SyncStatsRecord {
@@ -1938,7 +1980,225 @@ func (b0 SyncStatsRecord_builder) Build() *SyncStatsRecord {
 	x.xxx_hidden_ConnectorCallStats = b.ConnectorCallStats
 	x.xxx_hidden_SessionStoreStats = b.SessionStoreStats
 	x.xxx_hidden_IngestQuality = b.IngestQuality
+	x.xxx_hidden_Compaction = b.Compaction
 	x.xxx_hidden_WrittenAt = b.WrittenAt
+	return m0
+}
+
+// CompactionProvenance records what a compaction produced and from what.
+type CompactionProvenance struct {
+	state                     protoimpl.MessageState             `protogen:"opaque.v1"`
+	xxx_hidden_Mode           string                             `protobuf:"bytes,1,opt,name=mode,proto3"`
+	xxx_hidden_BaseSyncId     string                             `protobuf:"bytes,3,opt,name=base_sync_id,json=baseSyncId,proto3"`
+	xxx_hidden_PartialSyncIds []string                           `protobuf:"bytes,4,rep,name=partial_sync_ids,json=partialSyncIds,proto3"`
+	xxx_hidden_PartialCount   int64                              `protobuf:"varint,5,opt,name=partial_count,json=partialCount,proto3"`
+	xxx_hidden_RecordCounts   map[string]*CompactionRecordCounts `protobuf:"bytes,6,rep,name=record_counts,json=recordCounts,proto3" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields             protoimpl.UnknownFields
+	sizeCache                 protoimpl.SizeCache
+}
+
+func (x *CompactionProvenance) Reset() {
+	*x = CompactionProvenance{}
+	mi := &file_c1_storage_v3_records_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CompactionProvenance) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CompactionProvenance) ProtoMessage() {}
+
+func (x *CompactionProvenance) ProtoReflect() protoreflect.Message {
+	mi := &file_c1_storage_v3_records_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+func (x *CompactionProvenance) GetMode() string {
+	if x != nil {
+		return x.xxx_hidden_Mode
+	}
+	return ""
+}
+
+func (x *CompactionProvenance) GetBaseSyncId() string {
+	if x != nil {
+		return x.xxx_hidden_BaseSyncId
+	}
+	return ""
+}
+
+func (x *CompactionProvenance) GetPartialSyncIds() []string {
+	if x != nil {
+		return x.xxx_hidden_PartialSyncIds
+	}
+	return nil
+}
+
+func (x *CompactionProvenance) GetPartialCount() int64 {
+	if x != nil {
+		return x.xxx_hidden_PartialCount
+	}
+	return 0
+}
+
+func (x *CompactionProvenance) GetRecordCounts() map[string]*CompactionRecordCounts {
+	if x != nil {
+		return x.xxx_hidden_RecordCounts
+	}
+	return nil
+}
+
+func (x *CompactionProvenance) SetMode(v string) {
+	x.xxx_hidden_Mode = v
+}
+
+func (x *CompactionProvenance) SetBaseSyncId(v string) {
+	x.xxx_hidden_BaseSyncId = v
+}
+
+func (x *CompactionProvenance) SetPartialSyncIds(v []string) {
+	x.xxx_hidden_PartialSyncIds = v
+}
+
+func (x *CompactionProvenance) SetPartialCount(v int64) {
+	x.xxx_hidden_PartialCount = v
+}
+
+func (x *CompactionProvenance) SetRecordCounts(v map[string]*CompactionRecordCounts) {
+	x.xxx_hidden_RecordCounts = v
+}
+
+type CompactionProvenance_builder struct {
+	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
+
+	// Compactor mode (fold, kway, overlay).
+	Mode           string
+	BaseSyncId     string
+	PartialSyncIds []string
+	PartialCount   int64
+	// Counts at merge completion, before any subsequent grant expansion.
+	// Per record-type output totals, plus added/replaced/carried attribution when
+	// the mode can tell (fold).
+	RecordCounts map[string]*CompactionRecordCounts
+}
+
+func (b0 CompactionProvenance_builder) Build() *CompactionProvenance {
+	m0 := &CompactionProvenance{}
+	b, x := &b0, m0
+	_, _ = b, x
+	x.xxx_hidden_Mode = b.Mode
+	x.xxx_hidden_BaseSyncId = b.BaseSyncId
+	x.xxx_hidden_PartialSyncIds = b.PartialSyncIds
+	x.xxx_hidden_PartialCount = b.PartialCount
+	x.xxx_hidden_RecordCounts = b.RecordCounts
+	return m0
+}
+
+type CompactionRecordCounts struct {
+	state               protoimpl.MessageState `protogen:"opaque.v1"`
+	xxx_hidden_Output   int64                  `protobuf:"varint,1,opt,name=output,proto3"`
+	xxx_hidden_Added    int64                  `protobuf:"varint,2,opt,name=added,proto3"`
+	xxx_hidden_Replaced int64                  `protobuf:"varint,3,opt,name=replaced,proto3"`
+	xxx_hidden_Carried  int64                  `protobuf:"varint,4,opt,name=carried,proto3"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
+}
+
+func (x *CompactionRecordCounts) Reset() {
+	*x = CompactionRecordCounts{}
+	mi := &file_c1_storage_v3_records_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CompactionRecordCounts) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CompactionRecordCounts) ProtoMessage() {}
+
+func (x *CompactionRecordCounts) ProtoReflect() protoreflect.Message {
+	mi := &file_c1_storage_v3_records_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+func (x *CompactionRecordCounts) GetOutput() int64 {
+	if x != nil {
+		return x.xxx_hidden_Output
+	}
+	return 0
+}
+
+func (x *CompactionRecordCounts) GetAdded() int64 {
+	if x != nil {
+		return x.xxx_hidden_Added
+	}
+	return 0
+}
+
+func (x *CompactionRecordCounts) GetReplaced() int64 {
+	if x != nil {
+		return x.xxx_hidden_Replaced
+	}
+	return 0
+}
+
+func (x *CompactionRecordCounts) GetCarried() int64 {
+	if x != nil {
+		return x.xxx_hidden_Carried
+	}
+	return 0
+}
+
+func (x *CompactionRecordCounts) SetOutput(v int64) {
+	x.xxx_hidden_Output = v
+}
+
+func (x *CompactionRecordCounts) SetAdded(v int64) {
+	x.xxx_hidden_Added = v
+}
+
+func (x *CompactionRecordCounts) SetReplaced(v int64) {
+	x.xxx_hidden_Replaced = v
+}
+
+func (x *CompactionRecordCounts) SetCarried(v int64) {
+	x.xxx_hidden_Carried = v
+}
+
+type CompactionRecordCounts_builder struct {
+	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
+
+	Output   int64
+	Added    int64
+	Replaced int64
+	Carried  int64
+}
+
+func (b0 CompactionRecordCounts_builder) Build() *CompactionRecordCounts {
+	m0 := &CompactionRecordCounts{}
+	b, x := &b0, m0
+	_, _ = b, x
+	x.xxx_hidden_Output = b.Output
+	x.xxx_hidden_Added = b.Added
+	x.xxx_hidden_Replaced = b.Replaced
+	x.xxx_hidden_Carried = b.Carried
 	return m0
 }
 
@@ -1960,7 +2220,7 @@ type IngestQualityStats struct {
 
 func (x *IngestQualityStats) Reset() {
 	*x = IngestQualityStats{}
-	mi := &file_c1_storage_v3_records_proto_msgTypes[10]
+	mi := &file_c1_storage_v3_records_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1972,7 +2232,7 @@ func (x *IngestQualityStats) String() string {
 func (*IngestQualityStats) ProtoMessage() {}
 
 func (x *IngestQualityStats) ProtoReflect() protoreflect.Message {
-	mi := &file_c1_storage_v3_records_proto_msgTypes[10]
+	mi := &file_c1_storage_v3_records_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2135,6 +2395,1196 @@ func (b0 IngestQualityStats_builder) Build() *IngestQualityStats {
 	return m0
 }
 
+// LedgerActionIdentity is the semantic identity of one syncer action
+// instance: the flat tuple that determines the connector request the
+// action's page makes (docs/tasks/sound-syncs-solutions-brief.md §3.2).
+// Equal identity ⇒ equal work. Field names mirror pkg/sync.Action; the
+// op is the action kind's stable string name so storage never imports
+// the syncer's enum.
+type LedgerActionIdentity struct {
+	state                           protoimpl.MessageState `protogen:"opaque.v1"`
+	xxx_hidden_Op                   string                 `protobuf:"bytes,1,opt,name=op,proto3"`
+	xxx_hidden_ResourceTypeId       string                 `protobuf:"bytes,2,opt,name=resource_type_id,json=resourceTypeId,proto3"`
+	xxx_hidden_ResourceId           string                 `protobuf:"bytes,3,opt,name=resource_id,json=resourceId,proto3"`
+	xxx_hidden_ParentResourceTypeId string                 `protobuf:"bytes,4,opt,name=parent_resource_type_id,json=parentResourceTypeId,proto3"`
+	xxx_hidden_ParentResourceId     string                 `protobuf:"bytes,5,opt,name=parent_resource_id,json=parentResourceId,proto3"`
+	xxx_hidden_PageToken            string                 `protobuf:"bytes,6,opt,name=page_token,json=pageToken,proto3"`
+	xxx_hidden_PageTokenHash        []byte                 `protobuf:"bytes,7,opt,name=page_token_hash,json=pageTokenHash,proto3"`
+	xxx_hidden_TypeScoped           bool                   `protobuf:"varint,8,opt,name=type_scoped,json=typeScoped,proto3"`
+	unknownFields                   protoimpl.UnknownFields
+	sizeCache                       protoimpl.SizeCache
+}
+
+func (x *LedgerActionIdentity) Reset() {
+	*x = LedgerActionIdentity{}
+	mi := &file_c1_storage_v3_records_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LedgerActionIdentity) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LedgerActionIdentity) ProtoMessage() {}
+
+func (x *LedgerActionIdentity) ProtoReflect() protoreflect.Message {
+	mi := &file_c1_storage_v3_records_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+func (x *LedgerActionIdentity) GetOp() string {
+	if x != nil {
+		return x.xxx_hidden_Op
+	}
+	return ""
+}
+
+func (x *LedgerActionIdentity) GetResourceTypeId() string {
+	if x != nil {
+		return x.xxx_hidden_ResourceTypeId
+	}
+	return ""
+}
+
+func (x *LedgerActionIdentity) GetResourceId() string {
+	if x != nil {
+		return x.xxx_hidden_ResourceId
+	}
+	return ""
+}
+
+func (x *LedgerActionIdentity) GetParentResourceTypeId() string {
+	if x != nil {
+		return x.xxx_hidden_ParentResourceTypeId
+	}
+	return ""
+}
+
+func (x *LedgerActionIdentity) GetParentResourceId() string {
+	if x != nil {
+		return x.xxx_hidden_ParentResourceId
+	}
+	return ""
+}
+
+func (x *LedgerActionIdentity) GetPageToken() string {
+	if x != nil {
+		return x.xxx_hidden_PageToken
+	}
+	return ""
+}
+
+func (x *LedgerActionIdentity) GetPageTokenHash() []byte {
+	if x != nil {
+		return x.xxx_hidden_PageTokenHash
+	}
+	return nil
+}
+
+func (x *LedgerActionIdentity) GetTypeScoped() bool {
+	if x != nil {
+		return x.xxx_hidden_TypeScoped
+	}
+	return false
+}
+
+func (x *LedgerActionIdentity) SetOp(v string) {
+	x.xxx_hidden_Op = v
+}
+
+func (x *LedgerActionIdentity) SetResourceTypeId(v string) {
+	x.xxx_hidden_ResourceTypeId = v
+}
+
+func (x *LedgerActionIdentity) SetResourceId(v string) {
+	x.xxx_hidden_ResourceId = v
+}
+
+func (x *LedgerActionIdentity) SetParentResourceTypeId(v string) {
+	x.xxx_hidden_ParentResourceTypeId = v
+}
+
+func (x *LedgerActionIdentity) SetParentResourceId(v string) {
+	x.xxx_hidden_ParentResourceId = v
+}
+
+func (x *LedgerActionIdentity) SetPageToken(v string) {
+	x.xxx_hidden_PageToken = v
+}
+
+func (x *LedgerActionIdentity) SetPageTokenHash(v []byte) {
+	if v == nil {
+		v = []byte{}
+	}
+	x.xxx_hidden_PageTokenHash = v
+}
+
+func (x *LedgerActionIdentity) SetTypeScoped(v bool) {
+	x.xxx_hidden_TypeScoped = v
+}
+
+type LedgerActionIdentity_builder struct {
+	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
+
+	Op                   string
+	ResourceTypeId       string
+	ResourceId           string
+	ParentResourceTypeId string
+	ParentResourceId     string
+	// The page token the action was AT (its request's cursor). Verbatim
+	// unless the row was scrubbed (LedgerRow.scrubbed), in which case
+	// empty; page_token_hash always identifies it.
+	PageToken string
+	// 16-byte truncated SHA-256 of page_token. The ledger key carries
+	// this instead of the token (bounded key size); the read-side
+	// identity compare uses it when the verbatim token is absent.
+	PageTokenHash []byte
+	TypeScoped    bool
+}
+
+func (b0 LedgerActionIdentity_builder) Build() *LedgerActionIdentity {
+	m0 := &LedgerActionIdentity{}
+	b, x := &b0, m0
+	_, _ = b, x
+	x.xxx_hidden_Op = b.Op
+	x.xxx_hidden_ResourceTypeId = b.ResourceTypeId
+	x.xxx_hidden_ResourceId = b.ResourceId
+	x.xxx_hidden_ParentResourceTypeId = b.ParentResourceTypeId
+	x.xxx_hidden_ParentResourceId = b.ParentResourceId
+	x.xxx_hidden_PageToken = b.PageToken
+	x.xxx_hidden_PageTokenHash = b.PageTokenHash
+	x.xxx_hidden_TypeScoped = b.TypeScoped
+	return m0
+}
+
+// LedgerChild is an action a page pushed. spawned is the syncer's
+// accounting flag for a connector-enqueued sibling cursor; it is not
+// part of the child's identity.
+type LedgerChild struct {
+	state               protoimpl.MessageState `protogen:"opaque.v1"`
+	xxx_hidden_Identity *LedgerActionIdentity  `protobuf:"bytes,1,opt,name=identity,proto3"`
+	xxx_hidden_Spawned  bool                   `protobuf:"varint,2,opt,name=spawned,proto3"`
+	xxx_hidden_WorkId   uint64                 `protobuf:"varint,3,opt,name=work_id,json=workId,proto3"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
+}
+
+func (x *LedgerChild) Reset() {
+	*x = LedgerChild{}
+	mi := &file_c1_storage_v3_records_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LedgerChild) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LedgerChild) ProtoMessage() {}
+
+func (x *LedgerChild) ProtoReflect() protoreflect.Message {
+	mi := &file_c1_storage_v3_records_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+func (x *LedgerChild) GetIdentity() *LedgerActionIdentity {
+	if x != nil {
+		return x.xxx_hidden_Identity
+	}
+	return nil
+}
+
+func (x *LedgerChild) GetSpawned() bool {
+	if x != nil {
+		return x.xxx_hidden_Spawned
+	}
+	return false
+}
+
+func (x *LedgerChild) GetWorkId() uint64 {
+	if x != nil {
+		return x.xxx_hidden_WorkId
+	}
+	return 0
+}
+
+func (x *LedgerChild) SetIdentity(v *LedgerActionIdentity) {
+	x.xxx_hidden_Identity = v
+}
+
+func (x *LedgerChild) SetSpawned(v bool) {
+	x.xxx_hidden_Spawned = v
+}
+
+func (x *LedgerChild) SetWorkId(v uint64) {
+	x.xxx_hidden_WorkId = v
+}
+
+func (x *LedgerChild) HasIdentity() bool {
+	if x == nil {
+		return false
+	}
+	return x.xxx_hidden_Identity != nil
+}
+
+func (x *LedgerChild) ClearIdentity() {
+	x.xxx_hidden_Identity = nil
+}
+
+type LedgerChild_builder struct {
+	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
+
+	Identity *LedgerActionIdentity
+	Spawned  bool
+	WorkId   uint64
+}
+
+func (b0 LedgerChild_builder) Build() *LedgerChild {
+	m0 := &LedgerChild{}
+	b, x := &b0, m0
+	_, _ = b, x
+	x.xxx_hidden_Identity = b.Identity
+	x.xxx_hidden_Spawned = b.Spawned
+	x.xxx_hidden_WorkId = b.WorkId
+	return m0
+}
+
+// Completion observations committed with records and pending-work updates.
+type LedgerRow struct {
+	state                           protoimpl.MessageState `protogen:"opaque.v1"`
+	xxx_hidden_Identity             *LedgerActionIdentity  `protobuf:"bytes,1,opt,name=identity,proto3"`
+	xxx_hidden_NextPageToken        string                 `protobuf:"bytes,2,opt,name=next_page_token,json=nextPageToken,proto3"`
+	xxx_hidden_NextPageTokenHash    []byte                 `protobuf:"bytes,3,opt,name=next_page_token_hash,json=nextPageTokenHash,proto3"`
+	xxx_hidden_Children             *[]*LedgerChild        `protobuf:"bytes,4,rep,name=children,proto3"`
+	xxx_hidden_Attempt              string                 `protobuf:"bytes,5,opt,name=attempt,proto3"`
+	xxx_hidden_CommittedAt          *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=committed_at,json=committedAt,proto3"`
+	xxx_hidden_ResourceTypesWritten uint64                 `protobuf:"varint,7,opt,name=resource_types_written,json=resourceTypesWritten,proto3"`
+	xxx_hidden_ResourcesWritten     uint64                 `protobuf:"varint,8,opt,name=resources_written,json=resourcesWritten,proto3"`
+	xxx_hidden_EntitlementsWritten  uint64                 `protobuf:"varint,9,opt,name=entitlements_written,json=entitlementsWritten,proto3"`
+	xxx_hidden_GrantsWritten        uint64                 `protobuf:"varint,10,opt,name=grants_written,json=grantsWritten,proto3"`
+	xxx_hidden_Replayed             bool                   `protobuf:"varint,11,opt,name=replayed,proto3"`
+	xxx_hidden_TypeScopedPlanned    bool                   `protobuf:"varint,12,opt,name=type_scoped_planned,json=typeScopedPlanned,proto3"`
+	xxx_hidden_Scrubbed             bool                   `protobuf:"varint,13,opt,name=scrubbed,proto3"`
+	xxx_hidden_PageMs               uint64                 `protobuf:"varint,14,opt,name=page_ms,json=pageMs,proto3"`
+	xxx_hidden_ConnectorMs          uint64                 `protobuf:"varint,15,opt,name=connector_ms,json=connectorMs,proto3"`
+	xxx_hidden_WaitMs               uint64                 `protobuf:"varint,16,opt,name=wait_ms,json=waitMs,proto3"`
+	xxx_hidden_Spawned              bool                   `protobuf:"varint,17,opt,name=spawned,proto3"`
+	xxx_hidden_ObservationsRecorded bool                   `protobuf:"varint,18,opt,name=observations_recorded,json=observationsRecorded,proto3"`
+	xxx_hidden_ConnectorAttempts    uint64                 `protobuf:"varint,19,opt,name=connector_attempts,json=connectorAttempts,proto3"`
+	xxx_hidden_ConnectorErrors      uint64                 `protobuf:"varint,20,opt,name=connector_errors,json=connectorErrors,proto3"`
+	xxx_hidden_SdkRetryWaitMs       uint64                 `protobuf:"varint,21,opt,name=sdk_retry_wait_ms,json=sdkRetryWaitMs,proto3"`
+	xxx_hidden_SdkRateLimitWaitMs   uint64                 `protobuf:"varint,22,opt,name=sdk_rate_limit_wait_ms,json=sdkRateLimitWaitMs,proto3"`
+	xxx_hidden_Collection           *LedgerCollectionStats `protobuf:"bytes,23,opt,name=collection,proto3"`
+	xxx_hidden_WorkId               uint64                 `protobuf:"varint,24,opt,name=work_id,json=workId,proto3"`
+	xxx_hidden_WorkRevision         uint64                 `protobuf:"varint,25,opt,name=work_revision,json=workRevision,proto3"`
+	unknownFields                   protoimpl.UnknownFields
+	sizeCache                       protoimpl.SizeCache
+}
+
+func (x *LedgerRow) Reset() {
+	*x = LedgerRow{}
+	mi := &file_c1_storage_v3_records_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LedgerRow) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LedgerRow) ProtoMessage() {}
+
+func (x *LedgerRow) ProtoReflect() protoreflect.Message {
+	mi := &file_c1_storage_v3_records_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+func (x *LedgerRow) GetIdentity() *LedgerActionIdentity {
+	if x != nil {
+		return x.xxx_hidden_Identity
+	}
+	return nil
+}
+
+func (x *LedgerRow) GetNextPageToken() string {
+	if x != nil {
+		return x.xxx_hidden_NextPageToken
+	}
+	return ""
+}
+
+func (x *LedgerRow) GetNextPageTokenHash() []byte {
+	if x != nil {
+		return x.xxx_hidden_NextPageTokenHash
+	}
+	return nil
+}
+
+func (x *LedgerRow) GetChildren() []*LedgerChild {
+	if x != nil {
+		if x.xxx_hidden_Children != nil {
+			return *x.xxx_hidden_Children
+		}
+	}
+	return nil
+}
+
+func (x *LedgerRow) GetAttempt() string {
+	if x != nil {
+		return x.xxx_hidden_Attempt
+	}
+	return ""
+}
+
+func (x *LedgerRow) GetCommittedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.xxx_hidden_CommittedAt
+	}
+	return nil
+}
+
+func (x *LedgerRow) GetResourceTypesWritten() uint64 {
+	if x != nil {
+		return x.xxx_hidden_ResourceTypesWritten
+	}
+	return 0
+}
+
+func (x *LedgerRow) GetResourcesWritten() uint64 {
+	if x != nil {
+		return x.xxx_hidden_ResourcesWritten
+	}
+	return 0
+}
+
+func (x *LedgerRow) GetEntitlementsWritten() uint64 {
+	if x != nil {
+		return x.xxx_hidden_EntitlementsWritten
+	}
+	return 0
+}
+
+func (x *LedgerRow) GetGrantsWritten() uint64 {
+	if x != nil {
+		return x.xxx_hidden_GrantsWritten
+	}
+	return 0
+}
+
+func (x *LedgerRow) GetReplayed() bool {
+	if x != nil {
+		return x.xxx_hidden_Replayed
+	}
+	return false
+}
+
+func (x *LedgerRow) GetTypeScopedPlanned() bool {
+	if x != nil {
+		return x.xxx_hidden_TypeScopedPlanned
+	}
+	return false
+}
+
+func (x *LedgerRow) GetScrubbed() bool {
+	if x != nil {
+		return x.xxx_hidden_Scrubbed
+	}
+	return false
+}
+
+func (x *LedgerRow) GetPageMs() uint64 {
+	if x != nil {
+		return x.xxx_hidden_PageMs
+	}
+	return 0
+}
+
+func (x *LedgerRow) GetConnectorMs() uint64 {
+	if x != nil {
+		return x.xxx_hidden_ConnectorMs
+	}
+	return 0
+}
+
+func (x *LedgerRow) GetWaitMs() uint64 {
+	if x != nil {
+		return x.xxx_hidden_WaitMs
+	}
+	return 0
+}
+
+func (x *LedgerRow) GetSpawned() bool {
+	if x != nil {
+		return x.xxx_hidden_Spawned
+	}
+	return false
+}
+
+func (x *LedgerRow) GetObservationsRecorded() bool {
+	if x != nil {
+		return x.xxx_hidden_ObservationsRecorded
+	}
+	return false
+}
+
+func (x *LedgerRow) GetConnectorAttempts() uint64 {
+	if x != nil {
+		return x.xxx_hidden_ConnectorAttempts
+	}
+	return 0
+}
+
+func (x *LedgerRow) GetConnectorErrors() uint64 {
+	if x != nil {
+		return x.xxx_hidden_ConnectorErrors
+	}
+	return 0
+}
+
+func (x *LedgerRow) GetSdkRetryWaitMs() uint64 {
+	if x != nil {
+		return x.xxx_hidden_SdkRetryWaitMs
+	}
+	return 0
+}
+
+func (x *LedgerRow) GetSdkRateLimitWaitMs() uint64 {
+	if x != nil {
+		return x.xxx_hidden_SdkRateLimitWaitMs
+	}
+	return 0
+}
+
+func (x *LedgerRow) GetCollection() *LedgerCollectionStats {
+	if x != nil {
+		return x.xxx_hidden_Collection
+	}
+	return nil
+}
+
+func (x *LedgerRow) GetWorkId() uint64 {
+	if x != nil {
+		return x.xxx_hidden_WorkId
+	}
+	return 0
+}
+
+func (x *LedgerRow) GetWorkRevision() uint64 {
+	if x != nil {
+		return x.xxx_hidden_WorkRevision
+	}
+	return 0
+}
+
+func (x *LedgerRow) SetIdentity(v *LedgerActionIdentity) {
+	x.xxx_hidden_Identity = v
+}
+
+func (x *LedgerRow) SetNextPageToken(v string) {
+	x.xxx_hidden_NextPageToken = v
+}
+
+func (x *LedgerRow) SetNextPageTokenHash(v []byte) {
+	if v == nil {
+		v = []byte{}
+	}
+	x.xxx_hidden_NextPageTokenHash = v
+}
+
+func (x *LedgerRow) SetChildren(v []*LedgerChild) {
+	x.xxx_hidden_Children = &v
+}
+
+func (x *LedgerRow) SetAttempt(v string) {
+	x.xxx_hidden_Attempt = v
+}
+
+func (x *LedgerRow) SetCommittedAt(v *timestamppb.Timestamp) {
+	x.xxx_hidden_CommittedAt = v
+}
+
+func (x *LedgerRow) SetResourceTypesWritten(v uint64) {
+	x.xxx_hidden_ResourceTypesWritten = v
+}
+
+func (x *LedgerRow) SetResourcesWritten(v uint64) {
+	x.xxx_hidden_ResourcesWritten = v
+}
+
+func (x *LedgerRow) SetEntitlementsWritten(v uint64) {
+	x.xxx_hidden_EntitlementsWritten = v
+}
+
+func (x *LedgerRow) SetGrantsWritten(v uint64) {
+	x.xxx_hidden_GrantsWritten = v
+}
+
+func (x *LedgerRow) SetReplayed(v bool) {
+	x.xxx_hidden_Replayed = v
+}
+
+func (x *LedgerRow) SetTypeScopedPlanned(v bool) {
+	x.xxx_hidden_TypeScopedPlanned = v
+}
+
+func (x *LedgerRow) SetScrubbed(v bool) {
+	x.xxx_hidden_Scrubbed = v
+}
+
+func (x *LedgerRow) SetPageMs(v uint64) {
+	x.xxx_hidden_PageMs = v
+}
+
+func (x *LedgerRow) SetConnectorMs(v uint64) {
+	x.xxx_hidden_ConnectorMs = v
+}
+
+func (x *LedgerRow) SetWaitMs(v uint64) {
+	x.xxx_hidden_WaitMs = v
+}
+
+func (x *LedgerRow) SetSpawned(v bool) {
+	x.xxx_hidden_Spawned = v
+}
+
+func (x *LedgerRow) SetObservationsRecorded(v bool) {
+	x.xxx_hidden_ObservationsRecorded = v
+}
+
+func (x *LedgerRow) SetConnectorAttempts(v uint64) {
+	x.xxx_hidden_ConnectorAttempts = v
+}
+
+func (x *LedgerRow) SetConnectorErrors(v uint64) {
+	x.xxx_hidden_ConnectorErrors = v
+}
+
+func (x *LedgerRow) SetSdkRetryWaitMs(v uint64) {
+	x.xxx_hidden_SdkRetryWaitMs = v
+}
+
+func (x *LedgerRow) SetSdkRateLimitWaitMs(v uint64) {
+	x.xxx_hidden_SdkRateLimitWaitMs = v
+}
+
+func (x *LedgerRow) SetCollection(v *LedgerCollectionStats) {
+	x.xxx_hidden_Collection = v
+}
+
+func (x *LedgerRow) SetWorkId(v uint64) {
+	x.xxx_hidden_WorkId = v
+}
+
+func (x *LedgerRow) SetWorkRevision(v uint64) {
+	x.xxx_hidden_WorkRevision = v
+}
+
+func (x *LedgerRow) HasIdentity() bool {
+	if x == nil {
+		return false
+	}
+	return x.xxx_hidden_Identity != nil
+}
+
+func (x *LedgerRow) HasCommittedAt() bool {
+	if x == nil {
+		return false
+	}
+	return x.xxx_hidden_CommittedAt != nil
+}
+
+func (x *LedgerRow) HasCollection() bool {
+	if x == nil {
+		return false
+	}
+	return x.xxx_hidden_Collection != nil
+}
+
+func (x *LedgerRow) ClearIdentity() {
+	x.xxx_hidden_Identity = nil
+}
+
+func (x *LedgerRow) ClearCommittedAt() {
+	x.xxx_hidden_CommittedAt = nil
+}
+
+func (x *LedgerRow) ClearCollection() {
+	x.xxx_hidden_Collection = nil
+}
+
+type LedgerRow_builder struct {
+	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
+
+	// Request arguments; work_id and work_revision distinguish executions.
+	Identity *LedgerActionIdentity
+	// Cursor for the action's next page; empty means the action
+	// finished on this page. Scrubbed to empty with next_page_token_hash
+	// retained when scrubbed is set.
+	NextPageToken     string
+	NextPageTokenHash []byte
+	Children          []*LedgerChild
+	// Attempt that committed the page (the syncer's attempt epoch) and
+	// when.
+	Attempt     string
+	CommittedAt *timestamppb.Timestamp
+	// Records staged in the page's batch, by kind.
+	ResourceTypesWritten uint64
+	ResourcesWritten     uint64
+	EntitlementsWritten  uint64
+	GrantsWritten        uint64
+	// The page's rows came from source-cache replay rather than a fresh
+	// connector fetch.
+	Replayed bool
+	// Post-transition action state that must ride in the row (brief
+	// §3.2 structural finding 2): row present ⇒ type-scoped planning ran.
+	TypeScopedPlanned bool
+	// Tokens (identity.page_token, next_page_token, children tokens)
+	// were replaced by their hashes at seal because the connector
+	// declared its page tokens sensitive.
+	Scrubbed bool
+	// Per-page timings (brief §3.12): wall time of the handler, time
+	// spent inside connector calls, and time spent waiting (rate-limit
+	// and retry sleeps). Milliseconds; zero when not measured.
+	PageMs      uint64
+	ConnectorMs uint64
+	WaitMs      uint64
+	// The page's own action was a spawned cursor (see LedgerChild).
+	Spawned              bool
+	ObservationsRecorded bool
+	ConnectorAttempts    uint64
+	ConnectorErrors      uint64
+	SdkRetryWaitMs       uint64
+	SdkRateLimitWaitMs   uint64
+	Collection           *LedgerCollectionStats
+	WorkId               uint64
+	WorkRevision         uint64
+}
+
+func (b0 LedgerRow_builder) Build() *LedgerRow {
+	m0 := &LedgerRow{}
+	b, x := &b0, m0
+	_, _ = b, x
+	x.xxx_hidden_Identity = b.Identity
+	x.xxx_hidden_NextPageToken = b.NextPageToken
+	x.xxx_hidden_NextPageTokenHash = b.NextPageTokenHash
+	x.xxx_hidden_Children = &b.Children
+	x.xxx_hidden_Attempt = b.Attempt
+	x.xxx_hidden_CommittedAt = b.CommittedAt
+	x.xxx_hidden_ResourceTypesWritten = b.ResourceTypesWritten
+	x.xxx_hidden_ResourcesWritten = b.ResourcesWritten
+	x.xxx_hidden_EntitlementsWritten = b.EntitlementsWritten
+	x.xxx_hidden_GrantsWritten = b.GrantsWritten
+	x.xxx_hidden_Replayed = b.Replayed
+	x.xxx_hidden_TypeScopedPlanned = b.TypeScopedPlanned
+	x.xxx_hidden_Scrubbed = b.Scrubbed
+	x.xxx_hidden_PageMs = b.PageMs
+	x.xxx_hidden_ConnectorMs = b.ConnectorMs
+	x.xxx_hidden_WaitMs = b.WaitMs
+	x.xxx_hidden_Spawned = b.Spawned
+	x.xxx_hidden_ObservationsRecorded = b.ObservationsRecorded
+	x.xxx_hidden_ConnectorAttempts = b.ConnectorAttempts
+	x.xxx_hidden_ConnectorErrors = b.ConnectorErrors
+	x.xxx_hidden_SdkRetryWaitMs = b.SdkRetryWaitMs
+	x.xxx_hidden_SdkRateLimitWaitMs = b.SdkRateLimitWaitMs
+	x.xxx_hidden_Collection = b.Collection
+	x.xxx_hidden_WorkId = b.WorkId
+	x.xxx_hidden_WorkRevision = b.WorkRevision
+	return m0
+}
+
+type LedgerCollectionStats struct {
+	state                                         protoimpl.MessageState `protogen:"opaque.v1"`
+	xxx_hidden_ListResponses                      uint64                 `protobuf:"varint,1,opt,name=list_responses,json=listResponses,proto3"`
+	xxx_hidden_EmptyListResponses                 uint64                 `protobuf:"varint,2,opt,name=empty_list_responses,json=emptyListResponses,proto3"`
+	xxx_hidden_EmptyListResponsesWithContinuation uint64                 `protobuf:"varint,3,opt,name=empty_list_responses_with_continuation,json=emptyListResponsesWithContinuation,proto3"`
+	xxx_hidden_ResourceTypesReceived              uint64                 `protobuf:"varint,4,opt,name=resource_types_received,json=resourceTypesReceived,proto3"`
+	xxx_hidden_ResourcesReceived                  uint64                 `protobuf:"varint,5,opt,name=resources_received,json=resourcesReceived,proto3"`
+	xxx_hidden_EntitlementsReceived               uint64                 `protobuf:"varint,6,opt,name=entitlements_received,json=entitlementsReceived,proto3"`
+	xxx_hidden_GrantsReceived                     uint64                 `protobuf:"varint,7,opt,name=grants_received,json=grantsReceived,proto3"`
+	xxx_hidden_ResourceTypesExcludedBySelection   uint64                 `protobuf:"varint,8,opt,name=resource_types_excluded_by_selection,json=resourceTypesExcludedBySelection,proto3"`
+	xxx_hidden_EntitlementsExcludedByType         uint64                 `protobuf:"varint,9,opt,name=entitlements_excluded_by_type,json=entitlementsExcludedByType,proto3"`
+	xxx_hidden_GrantsExcludedByType               uint64                 `protobuf:"varint,10,opt,name=grants_excluded_by_type,json=grantsExcludedByType,proto3"`
+	xxx_hidden_DerivedResourcesExcludedByType     uint64                 `protobuf:"varint,11,opt,name=derived_resources_excluded_by_type,json=derivedResourcesExcludedByType,proto3"`
+	xxx_hidden_ResourceTypesExcludedInvalid       uint64                 `protobuf:"varint,12,opt,name=resource_types_excluded_invalid,json=resourceTypesExcludedInvalid,proto3"`
+	xxx_hidden_ResourcesExcludedInvalid           uint64                 `protobuf:"varint,13,opt,name=resources_excluded_invalid,json=resourcesExcludedInvalid,proto3"`
+	xxx_hidden_EntitlementsExcludedInvalid        uint64                 `protobuf:"varint,14,opt,name=entitlements_excluded_invalid,json=entitlementsExcludedInvalid,proto3"`
+	unknownFields                                 protoimpl.UnknownFields
+	sizeCache                                     protoimpl.SizeCache
+}
+
+func (x *LedgerCollectionStats) Reset() {
+	*x = LedgerCollectionStats{}
+	mi := &file_c1_storage_v3_records_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LedgerCollectionStats) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LedgerCollectionStats) ProtoMessage() {}
+
+func (x *LedgerCollectionStats) ProtoReflect() protoreflect.Message {
+	mi := &file_c1_storage_v3_records_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+func (x *LedgerCollectionStats) GetListResponses() uint64 {
+	if x != nil {
+		return x.xxx_hidden_ListResponses
+	}
+	return 0
+}
+
+func (x *LedgerCollectionStats) GetEmptyListResponses() uint64 {
+	if x != nil {
+		return x.xxx_hidden_EmptyListResponses
+	}
+	return 0
+}
+
+func (x *LedgerCollectionStats) GetEmptyListResponsesWithContinuation() uint64 {
+	if x != nil {
+		return x.xxx_hidden_EmptyListResponsesWithContinuation
+	}
+	return 0
+}
+
+func (x *LedgerCollectionStats) GetResourceTypesReceived() uint64 {
+	if x != nil {
+		return x.xxx_hidden_ResourceTypesReceived
+	}
+	return 0
+}
+
+func (x *LedgerCollectionStats) GetResourcesReceived() uint64 {
+	if x != nil {
+		return x.xxx_hidden_ResourcesReceived
+	}
+	return 0
+}
+
+func (x *LedgerCollectionStats) GetEntitlementsReceived() uint64 {
+	if x != nil {
+		return x.xxx_hidden_EntitlementsReceived
+	}
+	return 0
+}
+
+func (x *LedgerCollectionStats) GetGrantsReceived() uint64 {
+	if x != nil {
+		return x.xxx_hidden_GrantsReceived
+	}
+	return 0
+}
+
+func (x *LedgerCollectionStats) GetResourceTypesExcludedBySelection() uint64 {
+	if x != nil {
+		return x.xxx_hidden_ResourceTypesExcludedBySelection
+	}
+	return 0
+}
+
+func (x *LedgerCollectionStats) GetEntitlementsExcludedByType() uint64 {
+	if x != nil {
+		return x.xxx_hidden_EntitlementsExcludedByType
+	}
+	return 0
+}
+
+func (x *LedgerCollectionStats) GetGrantsExcludedByType() uint64 {
+	if x != nil {
+		return x.xxx_hidden_GrantsExcludedByType
+	}
+	return 0
+}
+
+func (x *LedgerCollectionStats) GetDerivedResourcesExcludedByType() uint64 {
+	if x != nil {
+		return x.xxx_hidden_DerivedResourcesExcludedByType
+	}
+	return 0
+}
+
+func (x *LedgerCollectionStats) GetResourceTypesExcludedInvalid() uint64 {
+	if x != nil {
+		return x.xxx_hidden_ResourceTypesExcludedInvalid
+	}
+	return 0
+}
+
+func (x *LedgerCollectionStats) GetResourcesExcludedInvalid() uint64 {
+	if x != nil {
+		return x.xxx_hidden_ResourcesExcludedInvalid
+	}
+	return 0
+}
+
+func (x *LedgerCollectionStats) GetEntitlementsExcludedInvalid() uint64 {
+	if x != nil {
+		return x.xxx_hidden_EntitlementsExcludedInvalid
+	}
+	return 0
+}
+
+func (x *LedgerCollectionStats) SetListResponses(v uint64) {
+	x.xxx_hidden_ListResponses = v
+}
+
+func (x *LedgerCollectionStats) SetEmptyListResponses(v uint64) {
+	x.xxx_hidden_EmptyListResponses = v
+}
+
+func (x *LedgerCollectionStats) SetEmptyListResponsesWithContinuation(v uint64) {
+	x.xxx_hidden_EmptyListResponsesWithContinuation = v
+}
+
+func (x *LedgerCollectionStats) SetResourceTypesReceived(v uint64) {
+	x.xxx_hidden_ResourceTypesReceived = v
+}
+
+func (x *LedgerCollectionStats) SetResourcesReceived(v uint64) {
+	x.xxx_hidden_ResourcesReceived = v
+}
+
+func (x *LedgerCollectionStats) SetEntitlementsReceived(v uint64) {
+	x.xxx_hidden_EntitlementsReceived = v
+}
+
+func (x *LedgerCollectionStats) SetGrantsReceived(v uint64) {
+	x.xxx_hidden_GrantsReceived = v
+}
+
+func (x *LedgerCollectionStats) SetResourceTypesExcludedBySelection(v uint64) {
+	x.xxx_hidden_ResourceTypesExcludedBySelection = v
+}
+
+func (x *LedgerCollectionStats) SetEntitlementsExcludedByType(v uint64) {
+	x.xxx_hidden_EntitlementsExcludedByType = v
+}
+
+func (x *LedgerCollectionStats) SetGrantsExcludedByType(v uint64) {
+	x.xxx_hidden_GrantsExcludedByType = v
+}
+
+func (x *LedgerCollectionStats) SetDerivedResourcesExcludedByType(v uint64) {
+	x.xxx_hidden_DerivedResourcesExcludedByType = v
+}
+
+func (x *LedgerCollectionStats) SetResourceTypesExcludedInvalid(v uint64) {
+	x.xxx_hidden_ResourceTypesExcludedInvalid = v
+}
+
+func (x *LedgerCollectionStats) SetResourcesExcludedInvalid(v uint64) {
+	x.xxx_hidden_ResourcesExcludedInvalid = v
+}
+
+func (x *LedgerCollectionStats) SetEntitlementsExcludedInvalid(v uint64) {
+	x.xxx_hidden_EntitlementsExcludedInvalid = v
+}
+
+type LedgerCollectionStats_builder struct {
+	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
+
+	ListResponses                      uint64
+	EmptyListResponses                 uint64
+	EmptyListResponsesWithContinuation uint64
+	ResourceTypesReceived              uint64
+	ResourcesReceived                  uint64
+	EntitlementsReceived               uint64
+	GrantsReceived                     uint64
+	ResourceTypesExcludedBySelection   uint64
+	EntitlementsExcludedByType         uint64
+	GrantsExcludedByType               uint64
+	DerivedResourcesExcludedByType     uint64
+	ResourceTypesExcludedInvalid       uint64
+	ResourcesExcludedInvalid           uint64
+	EntitlementsExcludedInvalid        uint64
+}
+
+func (b0 LedgerCollectionStats_builder) Build() *LedgerCollectionStats {
+	m0 := &LedgerCollectionStats{}
+	b, x := &b0, m0
+	_, _ = b, x
+	x.xxx_hidden_ListResponses = b.ListResponses
+	x.xxx_hidden_EmptyListResponses = b.EmptyListResponses
+	x.xxx_hidden_EmptyListResponsesWithContinuation = b.EmptyListResponsesWithContinuation
+	x.xxx_hidden_ResourceTypesReceived = b.ResourceTypesReceived
+	x.xxx_hidden_ResourcesReceived = b.ResourcesReceived
+	x.xxx_hidden_EntitlementsReceived = b.EntitlementsReceived
+	x.xxx_hidden_GrantsReceived = b.GrantsReceived
+	x.xxx_hidden_ResourceTypesExcludedBySelection = b.ResourceTypesExcludedBySelection
+	x.xxx_hidden_EntitlementsExcludedByType = b.EntitlementsExcludedByType
+	x.xxx_hidden_GrantsExcludedByType = b.GrantsExcludedByType
+	x.xxx_hidden_DerivedResourcesExcludedByType = b.DerivedResourcesExcludedByType
+	x.xxx_hidden_ResourceTypesExcludedInvalid = b.ResourceTypesExcludedInvalid
+	x.xxx_hidden_ResourcesExcludedInvalid = b.ResourcesExcludedInvalid
+	x.xxx_hidden_EntitlementsExcludedInvalid = b.EntitlementsExcludedInvalid
+	return m0
+}
+
+// LedgerCounterBucket is one (run, worker) bucket of sync-level
+// counters and stats (brief §3.6, §3.13). Every page commit blind-writes
+// its worker's whole bucket (cached total + this page's delta) in the
+// page's batch, so the contents are exactly as durable as the pages
+// that produced them; the sync-level value is the fold over every
+// bucket (counters, totals and durations sum; max latencies take the
+// max; flags OR). Buckets are keyed by a per-Sync()-invocation run id
+// and a worker index, so a resume with a different worker count never
+// overwrites a prior run's buckets. One reserved worker index per run
+// holds the run-level stats that are not page-shaped (phase durations,
+// session-store calls), blind-written best-effort at phase boundaries,
+// stop and seal. Names are the syncer's; the engine treats them as
+// opaque.
+type LedgerCounterBucket struct {
+	state                      protoimpl.MessageState `protogen:"opaque.v1"`
+	xxx_hidden_Counters        map[string]uint64      `protobuf:"bytes,1,rep,name=counters,proto3" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
+	xxx_hidden_Flags           uint64                 `protobuf:"varint,2,opt,name=flags,proto3"`
+	xxx_hidden_ConnectorCalls  map[string]*CallStat   `protobuf:"bytes,3,rep,name=connector_calls,json=connectorCalls,proto3" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	xxx_hidden_StepDurationsMs map[string]int64       `protobuf:"bytes,4,rep,name=step_durations_ms,json=stepDurationsMs,proto3" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
+	xxx_hidden_SessionCalls    map[string]*CallStat   `protobuf:"bytes,5,rep,name=session_calls,json=sessionCalls,proto3" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields              protoimpl.UnknownFields
+	sizeCache                  protoimpl.SizeCache
+}
+
+func (x *LedgerCounterBucket) Reset() {
+	*x = LedgerCounterBucket{}
+	mi := &file_c1_storage_v3_records_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LedgerCounterBucket) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LedgerCounterBucket) ProtoMessage() {}
+
+func (x *LedgerCounterBucket) ProtoReflect() protoreflect.Message {
+	mi := &file_c1_storage_v3_records_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+func (x *LedgerCounterBucket) GetCounters() map[string]uint64 {
+	if x != nil {
+		return x.xxx_hidden_Counters
+	}
+	return nil
+}
+
+func (x *LedgerCounterBucket) GetFlags() uint64 {
+	if x != nil {
+		return x.xxx_hidden_Flags
+	}
+	return 0
+}
+
+func (x *LedgerCounterBucket) GetConnectorCalls() map[string]*CallStat {
+	if x != nil {
+		return x.xxx_hidden_ConnectorCalls
+	}
+	return nil
+}
+
+func (x *LedgerCounterBucket) GetStepDurationsMs() map[string]int64 {
+	if x != nil {
+		return x.xxx_hidden_StepDurationsMs
+	}
+	return nil
+}
+
+func (x *LedgerCounterBucket) GetSessionCalls() map[string]*CallStat {
+	if x != nil {
+		return x.xxx_hidden_SessionCalls
+	}
+	return nil
+}
+
+func (x *LedgerCounterBucket) SetCounters(v map[string]uint64) {
+	x.xxx_hidden_Counters = v
+}
+
+func (x *LedgerCounterBucket) SetFlags(v uint64) {
+	x.xxx_hidden_Flags = v
+}
+
+func (x *LedgerCounterBucket) SetConnectorCalls(v map[string]*CallStat) {
+	x.xxx_hidden_ConnectorCalls = v
+}
+
+func (x *LedgerCounterBucket) SetStepDurationsMs(v map[string]int64) {
+	x.xxx_hidden_StepDurationsMs = v
+}
+
+func (x *LedgerCounterBucket) SetSessionCalls(v map[string]*CallStat) {
+	x.xxx_hidden_SessionCalls = v
+}
+
+type LedgerCounterBucket_builder struct {
+	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
+
+	Counters map[string]uint64
+	// Bitset OR'd across the run (the syncer's ingest-quality reasons).
+	Flags uint64
+	// Connector calls made by this worker's committed pages, by method.
+	ConnectorCalls map[string]*CallStat
+	// Run-level (reserved worker index only): phase wall time by step
+	// name, and session-store calls by op.
+	StepDurationsMs map[string]int64
+	SessionCalls    map[string]*CallStat
+}
+
+func (b0 LedgerCounterBucket_builder) Build() *LedgerCounterBucket {
+	m0 := &LedgerCounterBucket{}
+	b, x := &b0, m0
+	_, _ = b, x
+	x.xxx_hidden_Counters = b.Counters
+	x.xxx_hidden_Flags = b.Flags
+	x.xxx_hidden_ConnectorCalls = b.ConnectorCalls
+	x.xxx_hidden_StepDurationsMs = b.StepDurationsMs
+	x.xxx_hidden_SessionCalls = b.SessionCalls
+	return m0
+}
+
+// LedgerFrontier is the takeover record for a sync that began under a
+// token-only SDK (brief §3.8): the checkpoint token's serialized state
+// (the action stack and phase flags) moved into the ledger family in
+// the same batch that clears the sync run's token. Resume under atomic
+// pages loads the stack from here and walks the ledger forward; the
+// token is never consulted again for that sync.
+type LedgerFrontier struct {
+	state                  protoimpl.MessageState `protogen:"opaque.v1"`
+	xxx_hidden_State       string                 `protobuf:"bytes,1,opt,name=state,proto3"`
+	xxx_hidden_Attempt     string                 `protobuf:"bytes,2,opt,name=attempt,proto3"`
+	xxx_hidden_TakenOverAt *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=taken_over_at,json=takenOverAt,proto3"`
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
+}
+
+func (x *LedgerFrontier) Reset() {
+	*x = LedgerFrontier{}
+	mi := &file_c1_storage_v3_records_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LedgerFrontier) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LedgerFrontier) ProtoMessage() {}
+
+func (x *LedgerFrontier) ProtoReflect() protoreflect.Message {
+	mi := &file_c1_storage_v3_records_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+func (x *LedgerFrontier) GetState() string {
+	if x != nil {
+		return x.xxx_hidden_State
+	}
+	return ""
+}
+
+func (x *LedgerFrontier) GetAttempt() string {
+	if x != nil {
+		return x.xxx_hidden_Attempt
+	}
+	return ""
+}
+
+func (x *LedgerFrontier) GetTakenOverAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.xxx_hidden_TakenOverAt
+	}
+	return nil
+}
+
+func (x *LedgerFrontier) SetState(v string) {
+	x.xxx_hidden_State = v
+}
+
+func (x *LedgerFrontier) SetAttempt(v string) {
+	x.xxx_hidden_Attempt = v
+}
+
+func (x *LedgerFrontier) SetTakenOverAt(v *timestamppb.Timestamp) {
+	x.xxx_hidden_TakenOverAt = v
+}
+
+func (x *LedgerFrontier) HasTakenOverAt() bool {
+	if x == nil {
+		return false
+	}
+	return x.xxx_hidden_TakenOverAt != nil
+}
+
+func (x *LedgerFrontier) ClearTakenOverAt() {
+	x.xxx_hidden_TakenOverAt = nil
+}
+
+type LedgerFrontier_builder struct {
+	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
+
+	State       string
+	Attempt     string
+	TakenOverAt *timestamppb.Timestamp
+}
+
+func (b0 LedgerFrontier_builder) Build() *LedgerFrontier {
+	m0 := &LedgerFrontier{}
+	b, x := &b0, m0
+	_, _ = b, x
+	x.xxx_hidden_State = b.State
+	x.xxx_hidden_Attempt = b.Attempt
+	x.xxx_hidden_TakenOverAt = b.TakenOverAt
+	return m0
+}
+
 // CallStat mirrors c1.reader.v2.CallStat for the storage sidecar.
 type CallStat struct {
 	state               protoimpl.MessageState `protogen:"opaque.v1"`
@@ -2149,7 +3599,7 @@ type CallStat struct {
 
 func (x *CallStat) Reset() {
 	*x = CallStat{}
-	mi := &file_c1_storage_v3_records_proto_msgTypes[11]
+	mi := &file_c1_storage_v3_records_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2161,7 +3611,7 @@ func (x *CallStat) String() string {
 func (*CallStat) ProtoMessage() {}
 
 func (x *CallStat) ProtoReflect() protoreflect.Message {
-	mi := &file_c1_storage_v3_records_proto_msgTypes[11]
+	mi := &file_c1_storage_v3_records_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2260,7 +3710,7 @@ type SessionRecord struct {
 
 func (x *SessionRecord) Reset() {
 	*x = SessionRecord{}
-	mi := &file_c1_storage_v3_records_proto_msgTypes[12]
+	mi := &file_c1_storage_v3_records_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2272,7 +3722,7 @@ func (x *SessionRecord) String() string {
 func (*SessionRecord) ProtoMessage() {}
 
 func (x *SessionRecord) ProtoReflect() protoreflect.Message {
-	mi := &file_c1_storage_v3_records_proto_msgTypes[12]
+	mi := &file_c1_storage_v3_records_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2350,13 +3800,16 @@ type SourceCacheEntryRecord struct {
 	xxx_hidden_CacheValidator string                 `protobuf:"bytes,3,opt,name=cache_validator,json=cacheValidator,proto3"`
 	xxx_hidden_DiscoveredAt   *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=discovered_at,json=discoveredAt,proto3"`
 	xxx_hidden_Invalidated    bool                   `protobuf:"varint,5,opt,name=invalidated,proto3"`
+	xxx_hidden_RowCount       uint64                 `protobuf:"varint,6,opt,name=row_count,json=rowCount,proto3,oneof"`
+	XXX_raceDetectHookData    protoimpl.RaceDetectHookData
+	XXX_presence              [1]uint32
 	unknownFields             protoimpl.UnknownFields
 	sizeCache                 protoimpl.SizeCache
 }
 
 func (x *SourceCacheEntryRecord) Reset() {
 	*x = SourceCacheEntryRecord{}
-	mi := &file_c1_storage_v3_records_proto_msgTypes[13]
+	mi := &file_c1_storage_v3_records_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2368,7 +3821,7 @@ func (x *SourceCacheEntryRecord) String() string {
 func (*SourceCacheEntryRecord) ProtoMessage() {}
 
 func (x *SourceCacheEntryRecord) ProtoReflect() protoreflect.Message {
-	mi := &file_c1_storage_v3_records_proto_msgTypes[13]
+	mi := &file_c1_storage_v3_records_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2414,6 +3867,13 @@ func (x *SourceCacheEntryRecord) GetInvalidated() bool {
 	return false
 }
 
+func (x *SourceCacheEntryRecord) GetRowCount() uint64 {
+	if x != nil {
+		return x.xxx_hidden_RowCount
+	}
+	return 0
+}
+
 func (x *SourceCacheEntryRecord) SetRowKind(v string) {
 	x.xxx_hidden_RowKind = v
 }
@@ -2434,6 +3894,11 @@ func (x *SourceCacheEntryRecord) SetInvalidated(v bool) {
 	x.xxx_hidden_Invalidated = v
 }
 
+func (x *SourceCacheEntryRecord) SetRowCount(v uint64) {
+	x.xxx_hidden_RowCount = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 5, 6)
+}
+
 func (x *SourceCacheEntryRecord) HasDiscoveredAt() bool {
 	if x == nil {
 		return false
@@ -2441,8 +3906,20 @@ func (x *SourceCacheEntryRecord) HasDiscoveredAt() bool {
 	return x.xxx_hidden_DiscoveredAt != nil
 }
 
+func (x *SourceCacheEntryRecord) HasRowCount() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 5)
+}
+
 func (x *SourceCacheEntryRecord) ClearDiscoveredAt() {
 	x.xxx_hidden_DiscoveredAt = nil
+}
+
+func (x *SourceCacheEntryRecord) ClearRowCount() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 5)
+	x.xxx_hidden_RowCount = 0
 }
 
 type SourceCacheEntryRecord_builder struct {
@@ -2465,6 +3942,17 @@ type SourceCacheEntryRecord_builder struct {
 	// with a cold sync); the entry itself is kept so the scope's surviving
 	// stamped rows do not read as an I6 orphan (lost manifest write).
 	Invalidated bool
+	// Number of primary rows stamped with this scope at seal time,
+	// recomputed by EndSync from the primary keyspace (never maintained
+	// incrementally). Replay preflight requires the scope's index
+	// cardinality to equal this count before mutating the destination;
+	// a replay-eligible entry WITHOUT a count is a hard preflight error
+	// (seal-invariant violation — CO-004 shipped with the manifest format,
+	// so no counting-free artifact population exists). Presence is
+	// explicit so zero remains distinguishable from absent: zero means a
+	// proven empty scope. Cleared when a completed sync is rebound for
+	// mutation and recomputed when it reseals.
+	RowCount *uint64
 }
 
 func (b0 SourceCacheEntryRecord_builder) Build() *SourceCacheEntryRecord {
@@ -2476,6 +3964,10 @@ func (b0 SourceCacheEntryRecord_builder) Build() *SourceCacheEntryRecord {
 	x.xxx_hidden_CacheValidator = b.CacheValidator
 	x.xxx_hidden_DiscoveredAt = b.DiscoveredAt
 	x.xxx_hidden_Invalidated = b.Invalidated
+	if b.RowCount != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 5, 6)
+		x.xxx_hidden_RowCount = *b.RowCount
+	}
 	return m0
 }
 
@@ -2503,7 +3995,7 @@ type SourceCacheCompatRecord struct {
 
 func (x *SourceCacheCompatRecord) Reset() {
 	*x = SourceCacheCompatRecord{}
-	mi := &file_c1_storage_v3_records_proto_msgTypes[14]
+	mi := &file_c1_storage_v3_records_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2515,7 +4007,7 @@ func (x *SourceCacheCompatRecord) String() string {
 func (*SourceCacheCompatRecord) ProtoMessage() {}
 
 func (x *SourceCacheCompatRecord) ProtoReflect() protoreflect.Message {
-	mi := &file_c1_storage_v3_records_proto_msgTypes[14]
+	mi := &file_c1_storage_v3_records_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2618,15 +4110,16 @@ var File_c1_storage_v3_records_proto protoreflect.FileDescriptor
 
 const file_c1_storage_v3_records_proto_rawDesc = "" +
 	"\n" +
-	"\x1bc1/storage/v3/records.proto\x12\rc1.storage.v3\x1a\x1bc1/storage/v3/options.proto\x1a\x18c1/storage/v3/refs.proto\x1a\x19google/protobuf/any.proto\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xf8\x01\n" +
+	"\x1bc1/storage/v3/records.proto\x12\rc1.storage.v3\x1a\x1bc1/storage/v3/options.proto\x1a\x18c1/storage/v3/refs.proto\x1a\x19google/protobuf/any.proto\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\x95\x02\n" +
 	"\fStatusRecord\x12B\n" +
 	"\x06status\x18\x01 \x01(\x0e2*.c1.storage.v3.StatusRecord.ResourceStatusR\x06status\x12\x18\n" +
-	"\adetails\x18\x02 \x01(\tR\adetails\"\x89\x01\n" +
+	"\adetails\x18\x02 \x01(\tR\adetails\"\xa6\x01\n" +
 	"\x0eResourceStatus\x12\x1f\n" +
 	"\x1bRESOURCE_STATUS_UNSPECIFIED\x10\x00\x12\x1b\n" +
 	"\x17RESOURCE_STATUS_ENABLED\x10\x01\x12\x1c\n" +
 	"\x18RESOURCE_STATUS_DISABLED\x10\x02\x12\x1b\n" +
-	"\x17RESOURCE_STATUS_DELETED\x10\x03\"\x86\x01\n" +
+	"\x17RESOURCE_STATUS_DELETED\x10\x03\x12\x1b\n" +
+	"\x17RESOURCE_STATUS_PENDING\x10\x04\"\x86\x01\n" +
 	"\x15GrantExpandableRecord\x12'\n" +
 	"\x0fentitlement_ids\x18\x01 \x03(\tR\x0eentitlementIds\x12\x18\n" +
 	"\ashallow\x18\x02 \x01(\bR\ashallow\x12*\n" +
@@ -2646,7 +4139,7 @@ const file_c1_storage_v3_records_proto_rawDesc = "" +
 	"\rdiscovered_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\fdiscoveredAt\x12 \n" +
 	"\vdescription\x18\a \x01(\tR\vdescription\x12-\n" +
 	"\x12sourced_externally\x18\b \x01(\bR\x11sourcedExternally:!\x82\xf9+\x1d\n" +
-	"\x0eresource_types\x12\vexternal_idJ\x04\b\x01\x10\x02R\async_id\"\xb8\x05\n" +
+	"\x0eresource_types\x12\vexternal_idJ\x04\b\x01\x10\x02R\async_id\"\xed\x05\n" +
 	"\x0eResourceRecord\x12(\n" +
 	"\x10resource_type_id\x18\x02 \x01(\tR\x0eresourceTypeId\x12\x1f\n" +
 	"\vresource_id\x18\x03 \x01(\tR\n" +
@@ -2663,7 +4156,8 @@ const file_c1_storage_v3_records_proto_rawDesc = "" +
 	"\n" +
 	"created_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x12W\n" +
 	"\x10source_scope_key\x18\f \x01(\tB-\x8a\xf9+)\n" +
-	"\x0fby_source_scope\"\x16source_scope_key != ''R\x0esourceScopeKey:.\x82\xf9+*\n" +
+	"\x0fby_source_scope\"\x16source_scope_key != ''R\x0esourceScopeKey\x123\n" +
+	"\x16icon_asset_external_id\x18\r \x01(\tR\x13iconAssetExternalId:.\x82\xf9+*\n" +
 	"\tresources\x12\x10resource_type_id\x12\vresource_idJ\x04\b\x01\x10\x02R\async_id\"\xd7\x04\n" +
 	"\x11EntitlementRecord\x12\x1f\n" +
 	"\vexternal_id\x18\x02 \x01(\tR\n" +
@@ -2708,7 +4202,7 @@ const file_c1_storage_v3_records_proto_rawDesc = "" +
 	"\fcontent_type\x18\x03 \x01(\tR\vcontentType\x12\x12\n" +
 	"\x04data\x18\x04 \x01(\fR\x04data\x12?\n" +
 	"\rdiscovered_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\fdiscoveredAt:\"\x82\xf9+\x1e\n" +
-	"\x06assets\x12\async_id\x12\vexternal_id\"\xbf\x04\n" +
+	"\x06assets\x12\async_id\x12\vexternal_id\"\xaf\x04\n" +
 	"\rSyncRunRecord\x12\x17\n" +
 	"\async_id\x18\x01 \x01(\tR\x06syncId\x12+\n" +
 	"\x04type\x18\x02 \x01(\x0e2\x17.c1.storage.v3.SyncTypeR\x04type\x12$\n" +
@@ -2718,14 +4212,13 @@ const file_c1_storage_v3_records_proto_rawDesc = "" +
 	"\bended_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\aendedAt\x12\x1d\n" +
 	"\n" +
 	"sync_token\x18\x06 \x01(\tR\tsyncToken\x12#\n" +
-	"\rsupports_diff\x18\a \x01(\bR\fsupportsDiff\x12$\n" +
-	"\x0elinked_sync_id\x18\b \x01(\tR\flinkedSyncId\x12\x1c\n" +
+	"\rsupports_diff\x18\a \x01(\bR\fsupportsDiff\x12\x1c\n" +
 	"\tcompacted\x18\t \x01(\bR\tcompacted\x12>\n" +
 	"\x1bingest_invariant_generation\x18\n" +
 	" \x01(\tR\x19ingestInvariantGeneration\x12:\n" +
 	"\x19ingest_invariant_coverage\x18\v \x03(\tR\x17ingestInvariantCoverage\x122\n" +
 	"\x15ingest_invariant_mode\x18\f \x01(\tR\x13ingestInvariantMode:\x18\x82\xf9+\x14\n" +
-	"\tsync_runs\x12\async_id\"\xfe\v\n" +
+	"\tsync_runs\x12\async_idJ\x04\b\b\x10\tR\x0elinked_sync_id\"\xc3\f\n" +
 	"\x0fSyncStatsRecord\x12\x17\n" +
 	"\async_id\x18\x01 \x01(\tR\x06syncId\x12%\n" +
 	"\x0eresource_types\x18\x02 \x01(\x03R\rresourceTypes\x12\x1c\n" +
@@ -2740,7 +4233,10 @@ const file_c1_storage_v3_records_proto_rawDesc = "" +
 	" \x03(\v23.c1.storage.v3.SyncStatsRecord.StepDurationsMsEntryR\x0fstepDurationsMs\x12h\n" +
 	"\x14connector_call_stats\x18\v \x03(\v26.c1.storage.v3.SyncStatsRecord.ConnectorCallStatsEntryR\x12connectorCallStats\x12e\n" +
 	"\x13session_store_stats\x18\f \x03(\v25.c1.storage.v3.SyncStatsRecord.SessionStoreStatsEntryR\x11sessionStoreStats\x12H\n" +
-	"\x0eingest_quality\x18\r \x01(\v2!.c1.storage.v3.IngestQualityStatsR\ringestQuality\x129\n" +
+	"\x0eingest_quality\x18\r \x01(\v2!.c1.storage.v3.IngestQualityStatsR\ringestQuality\x12C\n" +
+	"\n" +
+	"compaction\x18\x0e \x01(\v2#.c1.storage.v3.CompactionProvenanceR\n" +
+	"compaction\x129\n" +
 	"\n" +
 	"written_at\x18d \x01(\v2\x1a.google.protobuf.TimestampR\twrittenAt\x1aJ\n" +
 	"\x1cResourcesByResourceTypeEntry\x12\x10\n" +
@@ -2760,7 +4256,22 @@ const file_c1_storage_v3_records_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\v2\x17.c1.storage.v3.CallStatR\x05value:\x028\x01\x1a]\n" +
 	"\x16SessionStoreStatsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12-\n" +
-	"\x05value\x18\x02 \x01(\v2\x17.c1.storage.v3.CallStatR\x05value:\x028\x01\"\xc9\x04\n" +
+	"\x05value\x18\x02 \x01(\v2\x17.c1.storage.v3.CallStatR\x05value:\x028\x01\"\xf4\x02\n" +
+	"\x14CompactionProvenance\x12\x12\n" +
+	"\x04mode\x18\x01 \x01(\tR\x04mode\x12 \n" +
+	"\fbase_sync_id\x18\x03 \x01(\tR\n" +
+	"baseSyncId\x12(\n" +
+	"\x10partial_sync_ids\x18\x04 \x03(\tR\x0epartialSyncIds\x12#\n" +
+	"\rpartial_count\x18\x05 \x01(\x03R\fpartialCount\x12Z\n" +
+	"\rrecord_counts\x18\x06 \x03(\v25.c1.storage.v3.CompactionProvenance.RecordCountsEntryR\frecordCounts\x1af\n" +
+	"\x11RecordCountsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12;\n" +
+	"\x05value\x18\x02 \x01(\v2%.c1.storage.v3.CompactionRecordCountsR\x05value:\x028\x01J\x04\b\x02\x10\x03R\rstats_sync_id\"|\n" +
+	"\x16CompactionRecordCounts\x12\x16\n" +
+	"\x06output\x18\x01 \x01(\x03R\x06output\x12\x14\n" +
+	"\x05added\x18\x02 \x01(\x03R\x05added\x12\x1a\n" +
+	"\breplaced\x18\x03 \x01(\x03R\breplaced\x12\x18\n" +
+	"\acarried\x18\x04 \x01(\x03R\acarried\"\xc9\x04\n" +
 	"\x12IngestQualityStats\x12=\n" +
 	"\x1bsource_cache_replay_blocked\x18\x01 \x01(\bR\x18sourceCacheReplayBlocked\x121\n" +
 	"\x14entitlements_dropped\x18\x02 \x01(\x04R\x13entitlementsDropped\x12%\n" +
@@ -2772,7 +4283,90 @@ const file_c1_storage_v3_records_proto_rawDesc = "" +
 	"\x1finvalid_resource_types_observed\x18\b \x01(\x04R\x1cinvalidResourceTypesObserved\x12<\n" +
 	"\x1ainvalid_resources_observed\x18\t \x01(\x04R\x18invalidResourcesObserved\x12B\n" +
 	"\x1dinvalid_entitlements_observed\x18\n" +
-	" \x01(\x04R\x1binvalidEntitlementsObserved\"\x86\x01\n" +
+	" \x01(\x04R\x1binvalidEntitlementsObserved\"\xbe\x02\n" +
+	"\x14LedgerActionIdentity\x12\x0e\n" +
+	"\x02op\x18\x01 \x01(\tR\x02op\x12(\n" +
+	"\x10resource_type_id\x18\x02 \x01(\tR\x0eresourceTypeId\x12\x1f\n" +
+	"\vresource_id\x18\x03 \x01(\tR\n" +
+	"resourceId\x125\n" +
+	"\x17parent_resource_type_id\x18\x04 \x01(\tR\x14parentResourceTypeId\x12,\n" +
+	"\x12parent_resource_id\x18\x05 \x01(\tR\x10parentResourceId\x12\x1d\n" +
+	"\n" +
+	"page_token\x18\x06 \x01(\tR\tpageToken\x12&\n" +
+	"\x0fpage_token_hash\x18\a \x01(\fR\rpageTokenHash\x12\x1f\n" +
+	"\vtype_scoped\x18\b \x01(\bR\n" +
+	"typeScoped\"\x81\x01\n" +
+	"\vLedgerChild\x12?\n" +
+	"\bidentity\x18\x01 \x01(\v2#.c1.storage.v3.LedgerActionIdentityR\bidentity\x12\x18\n" +
+	"\aspawned\x18\x02 \x01(\bR\aspawned\x12\x17\n" +
+	"\awork_id\x18\x03 \x01(\x04R\x06workId\"\xbc\b\n" +
+	"\tLedgerRow\x12?\n" +
+	"\bidentity\x18\x01 \x01(\v2#.c1.storage.v3.LedgerActionIdentityR\bidentity\x12&\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\x12/\n" +
+	"\x14next_page_token_hash\x18\x03 \x01(\fR\x11nextPageTokenHash\x126\n" +
+	"\bchildren\x18\x04 \x03(\v2\x1a.c1.storage.v3.LedgerChildR\bchildren\x12\x18\n" +
+	"\aattempt\x18\x05 \x01(\tR\aattempt\x12=\n" +
+	"\fcommitted_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\vcommittedAt\x124\n" +
+	"\x16resource_types_written\x18\a \x01(\x04R\x14resourceTypesWritten\x12+\n" +
+	"\x11resources_written\x18\b \x01(\x04R\x10resourcesWritten\x121\n" +
+	"\x14entitlements_written\x18\t \x01(\x04R\x13entitlementsWritten\x12%\n" +
+	"\x0egrants_written\x18\n" +
+	" \x01(\x04R\rgrantsWritten\x12\x1a\n" +
+	"\breplayed\x18\v \x01(\bR\breplayed\x12.\n" +
+	"\x13type_scoped_planned\x18\f \x01(\bR\x11typeScopedPlanned\x12\x1a\n" +
+	"\bscrubbed\x18\r \x01(\bR\bscrubbed\x12\x17\n" +
+	"\apage_ms\x18\x0e \x01(\x04R\x06pageMs\x12!\n" +
+	"\fconnector_ms\x18\x0f \x01(\x04R\vconnectorMs\x12\x17\n" +
+	"\await_ms\x18\x10 \x01(\x04R\x06waitMs\x12\x18\n" +
+	"\aspawned\x18\x11 \x01(\bR\aspawned\x123\n" +
+	"\x15observations_recorded\x18\x12 \x01(\bR\x14observationsRecorded\x12-\n" +
+	"\x12connector_attempts\x18\x13 \x01(\x04R\x11connectorAttempts\x12)\n" +
+	"\x10connector_errors\x18\x14 \x01(\x04R\x0fconnectorErrors\x12)\n" +
+	"\x11sdk_retry_wait_ms\x18\x15 \x01(\x04R\x0esdkRetryWaitMs\x122\n" +
+	"\x16sdk_rate_limit_wait_ms\x18\x16 \x01(\x04R\x12sdkRateLimitWaitMs\x12D\n" +
+	"\n" +
+	"collection\x18\x17 \x01(\v2$.c1.storage.v3.LedgerCollectionStatsR\n" +
+	"collection\x12\x17\n" +
+	"\awork_id\x18\x18 \x01(\x04R\x06workId\x12#\n" +
+	"\rwork_revision\x18\x19 \x01(\x04R\fworkRevision\"\xe8\x06\n" +
+	"\x15LedgerCollectionStats\x12%\n" +
+	"\x0elist_responses\x18\x01 \x01(\x04R\rlistResponses\x120\n" +
+	"\x14empty_list_responses\x18\x02 \x01(\x04R\x12emptyListResponses\x12R\n" +
+	"&empty_list_responses_with_continuation\x18\x03 \x01(\x04R\"emptyListResponsesWithContinuation\x126\n" +
+	"\x17resource_types_received\x18\x04 \x01(\x04R\x15resourceTypesReceived\x12-\n" +
+	"\x12resources_received\x18\x05 \x01(\x04R\x11resourcesReceived\x123\n" +
+	"\x15entitlements_received\x18\x06 \x01(\x04R\x14entitlementsReceived\x12'\n" +
+	"\x0fgrants_received\x18\a \x01(\x04R\x0egrantsReceived\x12N\n" +
+	"$resource_types_excluded_by_selection\x18\b \x01(\x04R resourceTypesExcludedBySelection\x12A\n" +
+	"\x1dentitlements_excluded_by_type\x18\t \x01(\x04R\x1aentitlementsExcludedByType\x125\n" +
+	"\x17grants_excluded_by_type\x18\n" +
+	" \x01(\x04R\x14grantsExcludedByType\x12J\n" +
+	"\"derived_resources_excluded_by_type\x18\v \x01(\x04R\x1ederivedResourcesExcludedByType\x12E\n" +
+	"\x1fresource_types_excluded_invalid\x18\f \x01(\x04R\x1cresourceTypesExcludedInvalid\x12<\n" +
+	"\x1aresources_excluded_invalid\x18\r \x01(\x04R\x18resourcesExcludedInvalid\x12B\n" +
+	"\x1dentitlements_excluded_invalid\x18\x0e \x01(\x04R\x1bentitlementsExcludedInvalid\"\xd1\x05\n" +
+	"\x13LedgerCounterBucket\x12L\n" +
+	"\bcounters\x18\x01 \x03(\v20.c1.storage.v3.LedgerCounterBucket.CountersEntryR\bcounters\x12\x14\n" +
+	"\x05flags\x18\x02 \x01(\x04R\x05flags\x12_\n" +
+	"\x0fconnector_calls\x18\x03 \x03(\v26.c1.storage.v3.LedgerCounterBucket.ConnectorCallsEntryR\x0econnectorCalls\x12c\n" +
+	"\x11step_durations_ms\x18\x04 \x03(\v27.c1.storage.v3.LedgerCounterBucket.StepDurationsMsEntryR\x0fstepDurationsMs\x12Y\n" +
+	"\rsession_calls\x18\x05 \x03(\v24.c1.storage.v3.LedgerCounterBucket.SessionCallsEntryR\fsessionCalls\x1a;\n" +
+	"\rCountersEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01\x1aZ\n" +
+	"\x13ConnectorCallsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12-\n" +
+	"\x05value\x18\x02 \x01(\v2\x17.c1.storage.v3.CallStatR\x05value:\x028\x01\x1aB\n" +
+	"\x14StepDurationsMsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\x03R\x05value:\x028\x01\x1aX\n" +
+	"\x11SessionCallsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12-\n" +
+	"\x05value\x18\x02 \x01(\v2\x17.c1.storage.v3.CallStatR\x05value:\x028\x01\"\x80\x01\n" +
+	"\x0eLedgerFrontier\x12\x14\n" +
+	"\x05state\x18\x01 \x01(\tR\x05state\x12\x18\n" +
+	"\aattempt\x18\x02 \x01(\tR\aattempt\x12>\n" +
+	"\rtaken_over_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\vtakenOverAt\"\x86\x01\n" +
 	"\bCallStat\x12\x14\n" +
 	"\x05count\x18\x01 \x01(\x03R\x05count\x12\x19\n" +
 	"\btotal_ms\x18\x02 \x01(\x03R\atotalMs\x12\x15\n" +
@@ -2783,31 +4377,34 @@ const file_c1_storage_v3_records_proto_rawDesc = "" +
 	"\async_id\x18\x01 \x01(\tR\x06syncId\x12\x10\n" +
 	"\x03key\x18\x02 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x03 \x01(\fR\x05value:\x1c\x82\xf9+\x18\n" +
-	"\bsessions\x12\async_id\x12\x03key\"\x8d\x02\n" +
+	"\bsessions\x12\async_id\x12\x03key\"\xbd\x02\n" +
 	"\x16SourceCacheEntryRecord\x12\x19\n" +
 	"\brow_kind\x18\x01 \x01(\tR\arowKind\x12\x1b\n" +
 	"\tscope_key\x18\x02 \x01(\tR\bscopeKey\x12'\n" +
 	"\x0fcache_validator\x18\x03 \x01(\tR\x0ecacheValidator\x12?\n" +
 	"\rdiscovered_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\fdiscoveredAt\x12 \n" +
-	"\vinvalidated\x18\x05 \x01(\bR\vinvalidated:/\x82\xf9++\n" +
-	"\x14source_cache_entries\x12\brow_kind\x12\tscope_key\"\xcc\x02\n" +
+	"\vinvalidated\x18\x05 \x01(\bR\vinvalidated\x12 \n" +
+	"\trow_count\x18\x06 \x01(\x04H\x00R\browCount\x88\x01\x01:/\x82\xf9++\n" +
+	"\x14source_cache_entries\x12\brow_kind\x12\tscope_keyB\f\n" +
+	"\n" +
+	"_row_count\"\xcc\x02\n" +
 	"\x17SourceCacheCompatRecord\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12<\n" +
 	"\x1aconnector_cache_generation\x18\x02 \x01(\tR\x18connectorCacheGeneration\x12@\n" +
 	"\x1cconnector_config_fingerprint\x18\x03 \x01(\tR\x1aconnectorConfigFingerprint\x12D\n" +
 	"\x1esdk_materialization_generation\x18\x04 \x01(\tR\x1csdkMaterializationGeneration\x12<\n" +
 	"\x1async_selection_fingerprint\x18\x05 \x01(\tR\x18syncSelectionFingerprint:\x1d\x82\xf9+\x19\n" +
-	"\x13source_cache_compat\x12\x02id*\xae\x01\n" +
+	"\x13source_cache_compat\x12\x02id*\xb6\x01\n" +
 	"\bSyncType\x12\x19\n" +
 	"\x15SYNC_TYPE_UNSPECIFIED\x10\x00\x12\x12\n" +
 	"\x0eSYNC_TYPE_FULL\x10\x01\x12\x15\n" +
 	"\x11SYNC_TYPE_PARTIAL\x10\x02\x12\x1c\n" +
-	"\x18SYNC_TYPE_RESOURCES_ONLY\x10\x03\x12\x1d\n" +
-	"\x19SYNC_TYPE_PARTIAL_UPSERTS\x10\x04\x12\x1f\n" +
-	"\x1bSYNC_TYPE_PARTIAL_DELETIONS\x10\x05B4Z2github.com/conductorone/baton-sdk/pb/c1/storage/v3b\x06proto3"
+	"\x18SYNC_TYPE_RESOURCES_ONLY\x10\x03\x12!\n" +
+	"\x19SYNC_TYPE_PARTIAL_UPSERTS\x10\x04\x1a\x02\b\x01\x12#\n" +
+	"\x1bSYNC_TYPE_PARTIAL_DELETIONS\x10\x05\x1a\x02\b\x01B4Z2github.com/conductorone/baton-sdk/pb/c1/storage/v3b\x06proto3"
 
 var file_c1_storage_v3_records_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_c1_storage_v3_records_proto_msgTypes = make([]protoimpl.MessageInfo, 22)
+var file_c1_storage_v3_records_proto_msgTypes = make([]protoimpl.MessageInfo, 35)
 var file_c1_storage_v3_records_proto_goTypes = []any{
 	(SyncType)(0),                    // 0: c1.storage.v3.SyncType
 	(StatusRecord_ResourceStatus)(0), // 1: c1.storage.v3.StatusRecord.ResourceStatus
@@ -2821,65 +4418,93 @@ var file_c1_storage_v3_records_proto_goTypes = []any{
 	(*AssetRecord)(nil),              // 9: c1.storage.v3.AssetRecord
 	(*SyncRunRecord)(nil),            // 10: c1.storage.v3.SyncRunRecord
 	(*SyncStatsRecord)(nil),          // 11: c1.storage.v3.SyncStatsRecord
-	(*IngestQualityStats)(nil),       // 12: c1.storage.v3.IngestQualityStats
-	(*CallStat)(nil),                 // 13: c1.storage.v3.CallStat
-	(*SessionRecord)(nil),            // 14: c1.storage.v3.SessionRecord
-	(*SourceCacheEntryRecord)(nil),   // 15: c1.storage.v3.SourceCacheEntryRecord
-	(*SourceCacheCompatRecord)(nil),  // 16: c1.storage.v3.SourceCacheCompatRecord
-	nil,                              // 17: c1.storage.v3.GrantRecord.SourcesEntry
-	nil,                              // 18: c1.storage.v3.SyncStatsRecord.ResourcesByResourceTypeEntry
-	nil,                              // 19: c1.storage.v3.SyncStatsRecord.GrantsByEntitlementResourceTypeEntry
-	nil,                              // 20: c1.storage.v3.SyncStatsRecord.EntitlementsByResourceTypeEntry
-	nil,                              // 21: c1.storage.v3.SyncStatsRecord.StepDurationsMsEntry
-	nil,                              // 22: c1.storage.v3.SyncStatsRecord.ConnectorCallStatsEntry
-	nil,                              // 23: c1.storage.v3.SyncStatsRecord.SessionStoreStatsEntry
-	(*anypb.Any)(nil),                // 24: google.protobuf.Any
-	(*timestamppb.Timestamp)(nil),    // 25: google.protobuf.Timestamp
-	(*ResourceRef)(nil),              // 26: c1.storage.v3.ResourceRef
-	(*structpb.Struct)(nil),          // 27: google.protobuf.Struct
-	(*EntitlementRef)(nil),           // 28: c1.storage.v3.EntitlementRef
-	(*PrincipalRef)(nil),             // 29: c1.storage.v3.PrincipalRef
+	(*CompactionProvenance)(nil),     // 12: c1.storage.v3.CompactionProvenance
+	(*CompactionRecordCounts)(nil),   // 13: c1.storage.v3.CompactionRecordCounts
+	(*IngestQualityStats)(nil),       // 14: c1.storage.v3.IngestQualityStats
+	(*LedgerActionIdentity)(nil),     // 15: c1.storage.v3.LedgerActionIdentity
+	(*LedgerChild)(nil),              // 16: c1.storage.v3.LedgerChild
+	(*LedgerRow)(nil),                // 17: c1.storage.v3.LedgerRow
+	(*LedgerCollectionStats)(nil),    // 18: c1.storage.v3.LedgerCollectionStats
+	(*LedgerCounterBucket)(nil),      // 19: c1.storage.v3.LedgerCounterBucket
+	(*LedgerFrontier)(nil),           // 20: c1.storage.v3.LedgerFrontier
+	(*CallStat)(nil),                 // 21: c1.storage.v3.CallStat
+	(*SessionRecord)(nil),            // 22: c1.storage.v3.SessionRecord
+	(*SourceCacheEntryRecord)(nil),   // 23: c1.storage.v3.SourceCacheEntryRecord
+	(*SourceCacheCompatRecord)(nil),  // 24: c1.storage.v3.SourceCacheCompatRecord
+	nil,                              // 25: c1.storage.v3.GrantRecord.SourcesEntry
+	nil,                              // 26: c1.storage.v3.SyncStatsRecord.ResourcesByResourceTypeEntry
+	nil,                              // 27: c1.storage.v3.SyncStatsRecord.GrantsByEntitlementResourceTypeEntry
+	nil,                              // 28: c1.storage.v3.SyncStatsRecord.EntitlementsByResourceTypeEntry
+	nil,                              // 29: c1.storage.v3.SyncStatsRecord.StepDurationsMsEntry
+	nil,                              // 30: c1.storage.v3.SyncStatsRecord.ConnectorCallStatsEntry
+	nil,                              // 31: c1.storage.v3.SyncStatsRecord.SessionStoreStatsEntry
+	nil,                              // 32: c1.storage.v3.CompactionProvenance.RecordCountsEntry
+	nil,                              // 33: c1.storage.v3.LedgerCounterBucket.CountersEntry
+	nil,                              // 34: c1.storage.v3.LedgerCounterBucket.ConnectorCallsEntry
+	nil,                              // 35: c1.storage.v3.LedgerCounterBucket.StepDurationsMsEntry
+	nil,                              // 36: c1.storage.v3.LedgerCounterBucket.SessionCallsEntry
+	(*anypb.Any)(nil),                // 37: google.protobuf.Any
+	(*timestamppb.Timestamp)(nil),    // 38: google.protobuf.Timestamp
+	(*ResourceRef)(nil),              // 39: c1.storage.v3.ResourceRef
+	(*structpb.Struct)(nil),          // 40: google.protobuf.Struct
+	(*EntitlementRef)(nil),           // 41: c1.storage.v3.EntitlementRef
+	(*PrincipalRef)(nil),             // 42: c1.storage.v3.PrincipalRef
 }
 var file_c1_storage_v3_records_proto_depIdxs = []int32{
 	1,  // 0: c1.storage.v3.StatusRecord.status:type_name -> c1.storage.v3.StatusRecord.ResourceStatus
-	24, // 1: c1.storage.v3.ResourceTypeRecord.annotations:type_name -> google.protobuf.Any
-	25, // 2: c1.storage.v3.ResourceTypeRecord.discovered_at:type_name -> google.protobuf.Timestamp
-	26, // 3: c1.storage.v3.ResourceRecord.parent:type_name -> c1.storage.v3.ResourceRef
-	24, // 4: c1.storage.v3.ResourceRecord.annotations:type_name -> google.protobuf.Any
-	25, // 5: c1.storage.v3.ResourceRecord.discovered_at:type_name -> google.protobuf.Timestamp
-	27, // 6: c1.storage.v3.ResourceRecord.profile:type_name -> google.protobuf.Struct
+	37, // 1: c1.storage.v3.ResourceTypeRecord.annotations:type_name -> google.protobuf.Any
+	38, // 2: c1.storage.v3.ResourceTypeRecord.discovered_at:type_name -> google.protobuf.Timestamp
+	39, // 3: c1.storage.v3.ResourceRecord.parent:type_name -> c1.storage.v3.ResourceRef
+	37, // 4: c1.storage.v3.ResourceRecord.annotations:type_name -> google.protobuf.Any
+	38, // 5: c1.storage.v3.ResourceRecord.discovered_at:type_name -> google.protobuf.Timestamp
+	40, // 6: c1.storage.v3.ResourceRecord.profile:type_name -> google.protobuf.Struct
 	2,  // 7: c1.storage.v3.ResourceRecord.status:type_name -> c1.storage.v3.StatusRecord
-	25, // 8: c1.storage.v3.ResourceRecord.created_at:type_name -> google.protobuf.Timestamp
-	26, // 9: c1.storage.v3.EntitlementRecord.resource:type_name -> c1.storage.v3.ResourceRef
-	24, // 10: c1.storage.v3.EntitlementRecord.annotations:type_name -> google.protobuf.Any
-	25, // 11: c1.storage.v3.EntitlementRecord.discovered_at:type_name -> google.protobuf.Timestamp
-	28, // 12: c1.storage.v3.GrantRecord.entitlement:type_name -> c1.storage.v3.EntitlementRef
-	29, // 13: c1.storage.v3.GrantRecord.principal:type_name -> c1.storage.v3.PrincipalRef
-	25, // 14: c1.storage.v3.GrantRecord.discovered_at:type_name -> google.protobuf.Timestamp
+	38, // 8: c1.storage.v3.ResourceRecord.created_at:type_name -> google.protobuf.Timestamp
+	39, // 9: c1.storage.v3.EntitlementRecord.resource:type_name -> c1.storage.v3.ResourceRef
+	37, // 10: c1.storage.v3.EntitlementRecord.annotations:type_name -> google.protobuf.Any
+	38, // 11: c1.storage.v3.EntitlementRecord.discovered_at:type_name -> google.protobuf.Timestamp
+	41, // 12: c1.storage.v3.GrantRecord.entitlement:type_name -> c1.storage.v3.EntitlementRef
+	42, // 13: c1.storage.v3.GrantRecord.principal:type_name -> c1.storage.v3.PrincipalRef
+	38, // 14: c1.storage.v3.GrantRecord.discovered_at:type_name -> google.protobuf.Timestamp
 	3,  // 15: c1.storage.v3.GrantRecord.expansion:type_name -> c1.storage.v3.GrantExpandableRecord
-	24, // 16: c1.storage.v3.GrantRecord.annotations:type_name -> google.protobuf.Any
-	17, // 17: c1.storage.v3.GrantRecord.sources:type_name -> c1.storage.v3.GrantRecord.SourcesEntry
-	25, // 18: c1.storage.v3.AssetRecord.discovered_at:type_name -> google.protobuf.Timestamp
+	37, // 16: c1.storage.v3.GrantRecord.annotations:type_name -> google.protobuf.Any
+	25, // 17: c1.storage.v3.GrantRecord.sources:type_name -> c1.storage.v3.GrantRecord.SourcesEntry
+	38, // 18: c1.storage.v3.AssetRecord.discovered_at:type_name -> google.protobuf.Timestamp
 	0,  // 19: c1.storage.v3.SyncRunRecord.type:type_name -> c1.storage.v3.SyncType
-	25, // 20: c1.storage.v3.SyncRunRecord.started_at:type_name -> google.protobuf.Timestamp
-	25, // 21: c1.storage.v3.SyncRunRecord.ended_at:type_name -> google.protobuf.Timestamp
-	18, // 22: c1.storage.v3.SyncStatsRecord.resources_by_resource_type:type_name -> c1.storage.v3.SyncStatsRecord.ResourcesByResourceTypeEntry
-	19, // 23: c1.storage.v3.SyncStatsRecord.grants_by_entitlement_resource_type:type_name -> c1.storage.v3.SyncStatsRecord.GrantsByEntitlementResourceTypeEntry
-	20, // 24: c1.storage.v3.SyncStatsRecord.entitlements_by_resource_type:type_name -> c1.storage.v3.SyncStatsRecord.EntitlementsByResourceTypeEntry
-	21, // 25: c1.storage.v3.SyncStatsRecord.step_durations_ms:type_name -> c1.storage.v3.SyncStatsRecord.StepDurationsMsEntry
-	22, // 26: c1.storage.v3.SyncStatsRecord.connector_call_stats:type_name -> c1.storage.v3.SyncStatsRecord.ConnectorCallStatsEntry
-	23, // 27: c1.storage.v3.SyncStatsRecord.session_store_stats:type_name -> c1.storage.v3.SyncStatsRecord.SessionStoreStatsEntry
-	12, // 28: c1.storage.v3.SyncStatsRecord.ingest_quality:type_name -> c1.storage.v3.IngestQualityStats
-	25, // 29: c1.storage.v3.SyncStatsRecord.written_at:type_name -> google.protobuf.Timestamp
-	25, // 30: c1.storage.v3.SourceCacheEntryRecord.discovered_at:type_name -> google.protobuf.Timestamp
-	4,  // 31: c1.storage.v3.GrantRecord.SourcesEntry.value:type_name -> c1.storage.v3.GrantSourceRecord
-	13, // 32: c1.storage.v3.SyncStatsRecord.ConnectorCallStatsEntry.value:type_name -> c1.storage.v3.CallStat
-	13, // 33: c1.storage.v3.SyncStatsRecord.SessionStoreStatsEntry.value:type_name -> c1.storage.v3.CallStat
-	34, // [34:34] is the sub-list for method output_type
-	34, // [34:34] is the sub-list for method input_type
-	34, // [34:34] is the sub-list for extension type_name
-	34, // [34:34] is the sub-list for extension extendee
-	0,  // [0:34] is the sub-list for field type_name
+	38, // 20: c1.storage.v3.SyncRunRecord.started_at:type_name -> google.protobuf.Timestamp
+	38, // 21: c1.storage.v3.SyncRunRecord.ended_at:type_name -> google.protobuf.Timestamp
+	26, // 22: c1.storage.v3.SyncStatsRecord.resources_by_resource_type:type_name -> c1.storage.v3.SyncStatsRecord.ResourcesByResourceTypeEntry
+	27, // 23: c1.storage.v3.SyncStatsRecord.grants_by_entitlement_resource_type:type_name -> c1.storage.v3.SyncStatsRecord.GrantsByEntitlementResourceTypeEntry
+	28, // 24: c1.storage.v3.SyncStatsRecord.entitlements_by_resource_type:type_name -> c1.storage.v3.SyncStatsRecord.EntitlementsByResourceTypeEntry
+	29, // 25: c1.storage.v3.SyncStatsRecord.step_durations_ms:type_name -> c1.storage.v3.SyncStatsRecord.StepDurationsMsEntry
+	30, // 26: c1.storage.v3.SyncStatsRecord.connector_call_stats:type_name -> c1.storage.v3.SyncStatsRecord.ConnectorCallStatsEntry
+	31, // 27: c1.storage.v3.SyncStatsRecord.session_store_stats:type_name -> c1.storage.v3.SyncStatsRecord.SessionStoreStatsEntry
+	14, // 28: c1.storage.v3.SyncStatsRecord.ingest_quality:type_name -> c1.storage.v3.IngestQualityStats
+	12, // 29: c1.storage.v3.SyncStatsRecord.compaction:type_name -> c1.storage.v3.CompactionProvenance
+	38, // 30: c1.storage.v3.SyncStatsRecord.written_at:type_name -> google.protobuf.Timestamp
+	32, // 31: c1.storage.v3.CompactionProvenance.record_counts:type_name -> c1.storage.v3.CompactionProvenance.RecordCountsEntry
+	15, // 32: c1.storage.v3.LedgerChild.identity:type_name -> c1.storage.v3.LedgerActionIdentity
+	15, // 33: c1.storage.v3.LedgerRow.identity:type_name -> c1.storage.v3.LedgerActionIdentity
+	16, // 34: c1.storage.v3.LedgerRow.children:type_name -> c1.storage.v3.LedgerChild
+	38, // 35: c1.storage.v3.LedgerRow.committed_at:type_name -> google.protobuf.Timestamp
+	18, // 36: c1.storage.v3.LedgerRow.collection:type_name -> c1.storage.v3.LedgerCollectionStats
+	33, // 37: c1.storage.v3.LedgerCounterBucket.counters:type_name -> c1.storage.v3.LedgerCounterBucket.CountersEntry
+	34, // 38: c1.storage.v3.LedgerCounterBucket.connector_calls:type_name -> c1.storage.v3.LedgerCounterBucket.ConnectorCallsEntry
+	35, // 39: c1.storage.v3.LedgerCounterBucket.step_durations_ms:type_name -> c1.storage.v3.LedgerCounterBucket.StepDurationsMsEntry
+	36, // 40: c1.storage.v3.LedgerCounterBucket.session_calls:type_name -> c1.storage.v3.LedgerCounterBucket.SessionCallsEntry
+	38, // 41: c1.storage.v3.LedgerFrontier.taken_over_at:type_name -> google.protobuf.Timestamp
+	38, // 42: c1.storage.v3.SourceCacheEntryRecord.discovered_at:type_name -> google.protobuf.Timestamp
+	4,  // 43: c1.storage.v3.GrantRecord.SourcesEntry.value:type_name -> c1.storage.v3.GrantSourceRecord
+	21, // 44: c1.storage.v3.SyncStatsRecord.ConnectorCallStatsEntry.value:type_name -> c1.storage.v3.CallStat
+	21, // 45: c1.storage.v3.SyncStatsRecord.SessionStoreStatsEntry.value:type_name -> c1.storage.v3.CallStat
+	13, // 46: c1.storage.v3.CompactionProvenance.RecordCountsEntry.value:type_name -> c1.storage.v3.CompactionRecordCounts
+	21, // 47: c1.storage.v3.LedgerCounterBucket.ConnectorCallsEntry.value:type_name -> c1.storage.v3.CallStat
+	21, // 48: c1.storage.v3.LedgerCounterBucket.SessionCallsEntry.value:type_name -> c1.storage.v3.CallStat
+	49, // [49:49] is the sub-list for method output_type
+	49, // [49:49] is the sub-list for method input_type
+	49, // [49:49] is the sub-list for extension type_name
+	49, // [49:49] is the sub-list for extension extendee
+	0,  // [0:49] is the sub-list for field type_name
 }
 
 func init() { file_c1_storage_v3_records_proto_init() }
@@ -2889,13 +4514,14 @@ func file_c1_storage_v3_records_proto_init() {
 	}
 	file_c1_storage_v3_options_proto_init()
 	file_c1_storage_v3_refs_proto_init()
+	file_c1_storage_v3_records_proto_msgTypes[21].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_c1_storage_v3_records_proto_rawDesc), len(file_c1_storage_v3_records_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   22,
+			NumMessages:   35,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

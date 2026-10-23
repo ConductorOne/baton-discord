@@ -46,8 +46,8 @@ func (e *Engine) PutGrantRecord(ctx context.Context, r *v3.GrantRecord) error {
 // the latest occurrence of each external_id and process only those —
 // earlier duplicates are dropped before any batch byte is written.
 // db.Get doesn't see in-batch writes either way, so this dedup pass is
-// the load-bearing safety net that neither the old read-before-write
-// path nor a pure skip-Get path provides.
+// required: neither the old read-before-write path nor a pure skip-Get
+// path drops earlier duplicates in the same batch.
 //
 // Read-before-write overwrite probe. On a NON-fresh sync the engine
 // must Get the prior primary key so StageGrantPutInline can stage the
@@ -67,9 +67,6 @@ func (e *Engine) PutGrantRecord(ctx context.Context, r *v3.GrantRecord) error {
 // flushable-batch promotion; the choke-point migration collapsed
 // them, trading that micro-optimization for atomicity and
 // can't-forget index derivation.)
-//
-// Fresh-sync still uses pebble.NoSync — EndFreshSync does one
-// Flush+fsync at sync end to harden the data.
 func (e *Engine) PutGrantRecords(ctx context.Context, records ...*v3.GrantRecord) error {
 	if len(records) == 0 {
 		return nil
@@ -81,81 +78,10 @@ func (e *Engine) PutGrantRecords(ctx context.Context, records ...*v3.GrantRecord
 		batch := e.db.NewRecordBatch()
 		defer batch.Close()
 
-		fresh := e.IsFreshSync()
-		// skipGet fires exactly once per fresh sync — only the first
-		// PutGrantRecords call sees the keyspace empty by construction.
-		// Subsequent calls in the same fresh sync still need
-		// read-before-write to clean up index entries that the prior
-		// in-sync calls already committed (e.g. paginated sources
-		// emitting an external_id on two pages).
-		skipGet := e.takeFreshGrantsEmpty()
-
-		// Dedup pre-pass: keep only the LAST occurrence of each
-		// structured grant identity. The map value is the records[]
-		// index — when we re-iterate, we process record i only if
-		// dedup[ext] == i.
-		type dedupKey struct {
-			id grantIdentity
+		if _, err := e.stageGrantRecords(batch, records); err != nil {
+			return err
 		}
-		var dedup map[dedupKey]int
-		if len(records) > 1 {
-			dedup = make(map[dedupKey]int, len(records))
-			for i, r := range records {
-				if r == nil {
-					continue
-				}
-				id, err := grantIdentityFromRecord(r)
-				if err != nil {
-					return err
-				}
-				dedup[dedupKey{id}] = i
-			}
-		}
-
-		for i, r := range records {
-			if r == nil {
-				continue
-			}
-			id, err := grantIdentityFromRecord(r)
-			if err != nil {
-				return err
-			}
-			if dedup != nil {
-				if dedup[dedupKey{id}] != i {
-					continue
-				}
-			}
-			key := encodeGrantIdentityKey(id)
-			val, err := marshalRecord(r)
-			if err != nil {
-				return err
-			}
-			hadOld := false
-			if !skipGet {
-				_, closer, getErr := e.db.Get(key)
-				switch {
-				case getErr == nil:
-					hadOld = true
-					closer.Close()
-				case errors.Is(getErr, pebble.ErrNotFound):
-					// no prior record — write unconditionally
-				default:
-					return fmt.Errorf("PutGrantRecords: get old: %w", getErr)
-				}
-			}
-			// One typed op stages the row and everything it owes:
-			// prior-row index cleanup, by_principal, needs_expansion,
-			// digest invalidation. Index keys derive from the primary
-			// key (identity-encoded), so the prior VALUE is not needed
-			// for cleanup — the Get above reduces to an existence probe.
-			if err := batch.StageGrantPutInline(key, val, hadOld, r.GetNeedsExpansion()); err != nil {
-				return err
-			}
-		}
-		opts := writeOpts(e.opts.durability)
-		if fresh {
-			opts = pebble.NoSync
-		}
+		opts := recordWriteOpts
 		// One atomic commit: primary rows and their index/invalidation
 		// obligations ride the same batch, so a primary commit landing
 		// without its index entries is unexpressible.
@@ -163,27 +89,100 @@ func (e *Engine) PutGrantRecords(ctx context.Context, records ...*v3.GrantRecord
 	})
 }
 
+// Caller holds the write barrier and commits the batch.
+func (e *Engine) stageGrantRecords(batch *rawdb.RecordBatch, records []*v3.GrantRecord) (uint64, error) {
+	if len(records) == 0 {
+		return 0, nil
+	}
+	// skipGet fires exactly once per fresh sync — only the first
+	// grant-staging call sees the keyspace empty by construction.
+	// Subsequent calls in the same fresh sync still need
+	// read-before-write to clean up index entries that the prior
+	// in-sync calls already committed (e.g. paginated sources
+	// emitting an external_id on two pages).
+	skipGet := e.takeFreshGrantsEmpty()
+
+	// Dedup pre-pass: keep only the LAST occurrence of each
+	// structured grant identity. The map value is the records[]
+	// index — when we re-iterate, we process record i only if
+	// dedup[ext] == i.
+	type dedupKey struct {
+		id grantIdentity
+	}
+	var dedup map[dedupKey]int
+	if len(records) > 1 {
+		dedup = make(map[dedupKey]int, len(records))
+		for i, r := range records {
+			if r == nil {
+				continue
+			}
+			id, err := grantIdentityFromRecord(r)
+			if err != nil {
+				return 0, err
+			}
+			dedup[dedupKey{id}] = i
+		}
+	}
+
+	var staged uint64
+	for i, r := range records {
+		if r == nil {
+			continue
+		}
+		id, err := grantIdentityFromRecord(r)
+		if err != nil {
+			return 0, err
+		}
+		if dedup != nil {
+			if dedup[dedupKey{id}] != i {
+				continue
+			}
+		}
+		staged++
+		key := encodeGrantIdentityKey(id)
+		val, err := marshalRecord(r)
+		if err != nil {
+			return 0, err
+		}
+		// One typed op stages the row and everything it owes:
+		// prior-row index cleanup, by_principal, needs_expansion,
+		// digest invalidation. Index keys derive from the primary
+		// key (identity-encoded); the prior value is retained only
+		// long enough to clean a changed source-scope index entry.
+		if skipGet {
+			if err := batch.StageGrantPutInline(key, val, nil, r.GetNeedsExpansion()); err != nil {
+				return 0, err
+			}
+			continue
+		}
+		oldVal, closer, getErr := e.db.Get(key)
+		switch {
+		case getErr == nil:
+			err = batch.StageGrantPutInline(key, val, oldVal, r.GetNeedsExpansion())
+			closer.Close()
+		case errors.Is(getErr, pebble.ErrNotFound):
+			err = batch.StageGrantPutInline(key, val, nil, r.GetNeedsExpansion())
+		default:
+			return 0, fmt.Errorf("PutGrantRecords: get old: %w", getErr)
+		}
+		if err != nil {
+			return 0, err
+		}
+	}
+	return staged, nil
+}
+
 // PutExpandedGrantRecords is the grant-expander write path — the
 // engine side of GrantStore.StoreExpandedGrants, and its only caller.
 //
-// Two properties distinguish it from PutGrantRecords:
-//
-//   - Single read-before-write. The expander must preserve each
-//     grant's existing Expansion / NeedsExpansion / DiscoveredAt
-//     side-state, which requires reading the prior primary value. That
-//     same read also yields the bytes needed to delete the prior
-//     value's stale index entries. The old path did BOTH a
-//     GetGrantRecord in the adapter (to preserve side-state) AND a
-//     db.Get here (to clean indexes) — two point lookups per grant.
-//     This path issues one and uses it for both.
-//
-//   - NoSync commit. Expanded grants are fully regenerable from the
-//     sync (the expander recomputes them from the entitlement graph),
-//     so a per-batch fsync buys nothing. Writes commit with
-//     pebble.NoSync and are hardened by the single Flush at sync end
-//     (EndFreshSync) or Close — the same bargain the
-//     fresh-sync fast path strikes, extended to resumed syncs where
-//     IsFreshSync() is false.
+// What distinguishes it from PutGrantRecords is a single
+// read-before-write. The expander must preserve each grant's existing
+// Expansion / NeedsExpansion / DiscoveredAt side-state, which requires
+// reading the prior primary value. That same read also yields the bytes
+// needed to delete the prior value's stale index entries. The old path
+// did BOTH a GetGrantRecord in the adapter (to preserve side-state) AND
+// a db.Get here (to clean indexes) — two point lookups per grant. This
+// path issues one and uses it for both.
 //
 // records arrive as freshly translated v3 GrantRecords with NO
 // preservation or discovered_at stamping applied; this method performs
@@ -244,46 +243,50 @@ func (e *Engine) PutExpandedGrantRecords(ctx context.Context, records []*v3.Gran
 			if dedup != nil && dedup[id] != i {
 				continue
 			}
-			ext := r.GetExternalId()
-			keyScratch = appendGrantIdentityKey(keyScratch[:0], id)
+			if err := func() error {
+				ext := r.GetExternalId()
+				keyScratch = appendGrantIdentityKey(keyScratch[:0], id)
 
-			hadOld := false
-			oldVal, closer, getErr := e.db.Get(keyScratch)
-			switch {
-			case getErr == nil:
-				// Preserve the prior record's expansion side-state +
-				// discovered_at (StoreExpandedGrants contract). The prior
-				// value's index cleanup is the typed op's obligation.
-				hadOld = true
-				prior.Reset()
-				if err := unmarshalRecord(oldVal, &prior); err != nil {
-					closer.Close()
-					return fmt.Errorf("PutExpandedGrantRecords: unmarshal prior %q: %w", ext, err)
+				oldVal, closer, getErr := e.db.Get(keyScratch)
+				switch {
+				case getErr == nil:
+					defer closer.Close()
+					// Preserve the prior record's expansion side-state +
+					// discovered_at (StoreExpandedGrants contract). The prior
+					// value's index cleanup is the typed op's obligation.
+					prior.Reset()
+					if err := unmarshalRecord(oldVal, &prior); err != nil {
+						return fmt.Errorf("PutExpandedGrantRecords: unmarshal prior %q: %w", ext, err)
+					}
+					r.SetExpansion(prior.GetExpansion())
+					r.SetNeedsExpansion(prior.GetNeedsExpansion())
+					r.SetDiscoveredAt(prior.GetDiscoveredAt())
+					r.SetSourceScopeKey(prior.GetSourceScopeKey())
+				case errors.Is(getErr, pebble.ErrNotFound):
+					// No prior record: discovered_at is stamped below unless the
+					// translation already carried one.
+				default:
+					return fmt.Errorf("PutExpandedGrantRecords: get old %q: %w", ext, getErr)
 				}
-				r.SetExpansion(prior.GetExpansion())
-				r.SetNeedsExpansion(prior.GetNeedsExpansion())
-				r.SetDiscoveredAt(prior.GetDiscoveredAt())
-				closer.Close()
-			case errors.Is(getErr, pebble.ErrNotFound):
-				// No prior record: discovered_at is stamped below unless the
-				// translation already carried one.
-			default:
-				return fmt.Errorf("PutExpandedGrantRecords: get old %q: %w", ext, getErr)
-			}
-			if r.GetDiscoveredAt() == nil {
-				r.SetDiscoveredAt(now)
-			}
+				if r.GetDiscoveredAt() == nil {
+					r.SetDiscoveredAt(now)
+				}
 
-			val, err := marshalRecordAppend(valScratch[:0], r)
-			if err != nil {
-				return err
-			}
-			valScratch = val
-			// Deferred regime: arms the rebuild marker, cleans the prior
-			// needs_expansion entry (by_principal is excised+rebuilt at
-			// seal), stages row + conditional needs_expansion + digest
-			// invalidation.
-			if err := batch.StageGrantPutDeferred(keyScratch, val, hadOld, r.GetNeedsExpansion()); err != nil {
+				val, err := marshalRecordAppend(valScratch[:0], r)
+				if err != nil {
+					return err
+				}
+				valScratch = val
+				// Deferred regime: arms the rebuild marker, cleans the prior
+				// needs_expansion entry (by_principal is excised+rebuilt at
+				// seal), stages row + conditional needs_expansion + digest
+				// invalidation.
+				var priorVal []byte
+				if getErr == nil {
+					priorVal = oldVal
+				}
+				return batch.StageGrantPutDeferred(keyScratch, val, priorVal, r.GetNeedsExpansion())
+			}(); err != nil {
 				return err
 			}
 		}
@@ -296,7 +299,7 @@ func (e *Engine) PutExpandedGrantRecords(ctx context.Context, records []*v3.Gran
 		// One atomic commit: rows and their obligations ride the same
 		// batch, so a primary commit landing without its index entries
 		// is unexpressible.
-		return batch.Commit(pebble.NoSync)
+		return batch.Commit(recordWriteOpts)
 	})
 }
 
@@ -339,7 +342,7 @@ func (e *Engine) PutSynthesizedGrantRecords(ctx context.Context, records []*v3.G
 			valScratch = val
 			// Deferred regime; the caller guarantees brand-new identities,
 			// so there is no prior row to clean (hadOldVal=false).
-			if err := batch.StageGrantPutDeferred(keyScratch, val, false, r.GetNeedsExpansion()); err != nil {
+			if err := batch.StageGrantPutDeferred(keyScratch, val, nil, r.GetNeedsExpansion()); err != nil {
 				return err
 			}
 		}
@@ -351,7 +354,7 @@ func (e *Engine) PutSynthesizedGrantRecords(ctx context.Context, records []*v3.G
 		// One atomic commit: rows and their obligations ride the same
 		// batch, so a primary commit landing without its index entries
 		// is unexpressible.
-		return batch.Commit(pebble.NoSync)
+		return batch.Commit(recordWriteOpts)
 	})
 }
 
@@ -378,10 +381,10 @@ func (e *Engine) PutSynthesizedGrantContributions(ctx context.Context, records [
 
 // synthLayerSegmentRows is the default row count at which an open layer
 // session cuts its current segment and hands it to the background worker for
-// merge + SST ingest. Cutting mid-layer is safe: nothing reads a layer's rows
+// merge into an SST. Cutting mid-layer is safe: nothing reads a layer's rows
 // until the next layer begins, and keys are globally unique, so segments may
 // cover overlapping key ranges without conflict. Segments keep the merge
-// fan-in small, bound temp-disk usage, and overlap merge/ingest work with the
+// fan-in small, bound temp-disk usage, and overlap merge work with the
 // producer's compute instead of serializing it at the layer boundary.
 const synthLayerSegmentRows = 8_000_000
 
@@ -395,7 +398,7 @@ func synthLayerSegmentLimit() int64 {
 }
 
 // synthLayerSegment is one finalized batch of sorted spill chunks awaiting
-// merge + ingest on the session's background worker.
+// merge on the session's background worker.
 type synthLayerSegment struct {
 	name   string
 	chunks []string
@@ -405,11 +408,12 @@ type synthLayerSegment struct {
 // rows as encoded (key, value) pairs in a background-sorted spill sorter.
 // Every segLimit rows the current sorter is finalized into a segment and
 // queued for the background worker, which k-way merges the segment's chunks
-// into one SST and ingests it while the producer keeps encoding. Finish
-// flushes the tail segment and waits the worker out. Encoding happens at Add
-// time, so the session never retains references into the caller's reused
-// buffers. One session at a time; the expansion driver is the single
-// producer.
+// into one SST while the producer keeps encoding. The producer ingests
+// finished SSTs on its next Add or at Finish, under writeMu; the worker
+// never touches the DB. Finish flushes the tail segment, waits the worker
+// out, and ingests what remains. Encoding happens at Add time, so the
+// session never retains references into the caller's reused buffers. One
+// session at a time; the expansion driver is the single producer.
 type synthGrantLayerSession struct {
 	dir      string
 	sorter   *spillSorter
@@ -419,13 +423,14 @@ type synthGrantLayerSession struct {
 	segLimit int64
 
 	// segCh carries finalized segments to the worker; its capacity bounds
-	// how many merged-but-uningested segments can stack up before Add blocks
-	// (backpressure). segErr holds the worker's first failure, surfaced on
-	// the next Add/Finish.
+	// how many segments can stack up before Add blocks (backpressure).
+	// segMu guards segErr (the worker's first failure, surfaced on the next
+	// Add/Finish) and ready (merged SST paths awaiting ingest).
 	segCh  chan synthLayerSegment
 	segWG  sync.WaitGroup
 	segMu  sync.Mutex
 	segErr error
+	ready  []string
 
 	// arenaFree recycles the 128MiB chunk arenas across all of the
 	// session's segment sorters (see spillArenaFreeList).
@@ -451,6 +456,20 @@ func (s *synthGrantLayerSession) takeErr() error {
 	s.segMu.Lock()
 	defer s.segMu.Unlock()
 	return s.segErr
+}
+
+func (s *synthGrantLayerSession) pushReady(sstPath string) {
+	s.segMu.Lock()
+	s.ready = append(s.ready, sstPath)
+	s.segMu.Unlock()
+}
+
+func (s *synthGrantLayerSession) takeReady() []string {
+	s.segMu.Lock()
+	defer s.segMu.Unlock()
+	out := s.ready
+	s.ready = nil
+	return out
 }
 
 func (s *synthGrantLayerSession) segName() string {
@@ -483,45 +502,28 @@ func (s *synthGrantLayerSession) cutSegment() error {
 // The boolean is part of the store-level contract (non-Pebble stores report
 // false and callers fall back to StoreNewExpandedGrantContributions).
 func (e *Engine) BeginSynthesizedGrantLayer(ctx context.Context) (bool, error) {
-	if err := e.checkWritable(); err != nil {
+	err := e.withWrite(func() error {
+		if err := e.requireCurrentSync(); err != nil {
+			return err
+		}
+		if e.synthLayer != nil {
+			return errors.New("pebble: synthesized grant layer session already open")
+		}
+		e.synthLayer = &synthGrantLayerSession{
+			now:      timestamppb.Now(),
+			rec:      &v3.GrantRecord{},
+			segLimit: synthLayerSegmentLimit(),
+		}
+		return nil
+	})
+	if err != nil {
 		return false, err
-	}
-	if err := e.requireCurrentSync(); err != nil {
-		return false, err
-	}
-	e.synthLayerMu.Lock()
-	defer e.synthLayerMu.Unlock()
-	if e.synthLayer != nil {
-		return false, errors.New("pebble: synthesized grant layer session already open")
-	}
-	e.synthLayer = &synthGrantLayerSession{
-		now:      timestamppb.Now(),
-		rec:      &v3.GrantRecord{},
-		segLimit: synthLayerSegmentLimit(),
 	}
 	return true, nil
 }
 
-// loadSynthLayer returns the open layer session (or nil) under synthLayerMu.
-func (e *Engine) loadSynthLayer() *synthGrantLayerSession {
-	e.synthLayerMu.Lock()
-	defer e.synthLayerMu.Unlock()
-	return e.synthLayer
-}
-
-// takeSynthLayer detaches and returns the open layer session (or nil) under
-// synthLayerMu, so Finish/Abort can tear it down without racing each other
-// or Close.
-func (e *Engine) takeSynthLayer() *synthGrantLayerSession {
-	e.synthLayerMu.Lock()
-	defer e.synthLayerMu.Unlock()
-	s := e.synthLayer
-	e.synthLayer = nil
-	return s
-}
-
 // initSynthLayerSession lazily allocates the session's temp dir, first
-// sorter, and background merge+ingest worker on the first Add.
+// sorter, and background merge worker on the first Add.
 func (e *Engine) initSynthLayerSession(ctx context.Context, s *synthGrantLayerSession) error {
 	dir, err := e.prepareStagingDir("", "pebble-synth-grant-layer-")
 	if err != nil {
@@ -544,60 +546,57 @@ func (e *Engine) initSynthLayerSession(ctx context.Context, s *synthGrantLayerSe
 		defer s.segWG.Done()
 		for seg := range s.segCh {
 			// After a failure (or abort), drain remaining segments without
-			// touching the DB; Finish surfaces the stored error.
+			// merging; Finish surfaces the stored error.
 			if s.takeErr() != nil {
 				continue
 			}
-			if err := e.ingestSynthLayerSegment(ctx, s.dir, seg); err != nil {
+			// The merge unlinks each chunk as it drains it; a merge that
+			// fails partway leaves its remaining chunks, and the SST, to the
+			// session's final dir cleanup.
+			sstPath := filepath.Join(s.dir, seg.name+".sst")
+			if err := mergeSortedSpillChunksToSST(ctx, e.fs(), sstPath, seg.name, seg.chunks); err != nil {
 				s.setErr(err)
+				continue
 			}
+			s.pushReady(sstPath)
 		}
 	}()
 	return nil
 }
 
-// ingestSynthLayerSegment merges one segment's sorted chunks into an SST and
-// ingests it. Chunk files are deleted once merged; the SST path is left for
-// the session's final dir cleanup (Pebble links/copies it on ingest).
-//
-// Runs on the session's background worker, which deliberately bypasses the
-// engine write barrier (an Add holding writeMu can block on the bounded
-// segment channel waiting for this worker, so worker-takes-writeMu would
-// deadlock). The db itself stays valid for the worker's whole life — Close
-// drains the worker via AbortSynthesizedGrantLayer before tearing the db
-// down — but CheckpointTo's Flush→Checkpoint→WAL-truncate window must not
-// see an ingest land in the middle: pebble's flushable-ingest path writes a
-// WAL record referencing the ingested SSTs, and truncateCheckpointWALs would
-// discard it from the snapshot. checkpointMu is that barrier.
-func (e *Engine) ingestSynthLayerSegment(ctx context.Context, dir string, seg synthLayerSegment) error {
-	sstPath := filepath.Join(dir, seg.name+".sst")
-	if err := mergeSortedSpillChunksToSST(ctx, e.fs(), sstPath, seg.name, seg.chunks); err != nil {
-		return err
-	}
-	for _, chunk := range seg.chunks {
-		_ = os.Remove(chunk)
-	}
-	e.checkpointMu.RLock()
-	defer e.checkpointMu.RUnlock()
-	if err := e.db.IngestSSTs(ctx, []string{sstPath}); err != nil {
-		return fmt.Errorf("synth grant layer: ingest segment %s: %w", seg.name, err)
+// ingestReadyLocked ingests the SSTs the worker has finished, one call per
+// SST because segments cover overlapping key ranges. Requires writeMu, so
+// an ingest can never land inside CheckpointTo's Flush→Checkpoint→truncate
+// window: pebble's flushable-ingest path writes a WAL record naming the
+// SSTs, and truncateCheckpointWALs would discard it from the snapshot.
+func (e *Engine) ingestReadyLocked(ctx context.Context, s *synthGrantLayerSession) error {
+	for _, sstPath := range s.takeReady() {
+		if err := e.db.IngestSSTs(ctx, []string{sstPath}); err != nil {
+			err = fmt.Errorf("synth grant layer: ingest %s: %w", filepath.Base(sstPath), err)
+			s.setErr(err)
+			return err
+		}
 	}
 	return nil
 }
 
 // AddSynthesizedGrantLayerContributions encodes records into the open layer
-// session. Rows become readable as their segment is ingested; callers must
-// not rely on visibility before FinishSynthesizedGrantLayer returns.
+// session. Rows become readable as the producer ingests finished segments
+// on later Adds; callers must not rely on visibility before
+// FinishSynthesizedGrantLayer returns.
 func (e *Engine) AddSynthesizedGrantLayerContributions(ctx context.Context, records []synthesizedGrantRecord) error {
 	if len(records) == 0 {
 		return nil
 	}
 	return e.withWrite(func() error {
-		s := e.loadSynthLayer()
+		s := e.synthLayer
 		if s == nil {
 			return errors.New("pebble: no open synthesized grant layer session")
 		}
 		if err := s.takeErr(); err != nil {
+			return err
+		}
+		if err := e.ingestReadyLocked(ctx, s); err != nil {
 			return err
 		}
 		if s.sorter == nil {
@@ -653,11 +652,13 @@ func (e *Engine) AddSynthesizedGrantLayerContributions(ctx context.Context, reco
 }
 
 // FinishSynthesizedGrantLayer flushes the session's tail segment, waits for
-// the background worker to merge and ingest every queued segment, and closes
-// the session. No-op if no session is open or the session saw no rows.
+// the background worker to merge every queued segment, ingests the merged
+// SSTs, and closes the session. No-op if no session is open or the session
+// saw no rows.
 func (e *Engine) FinishSynthesizedGrantLayer(ctx context.Context) error {
 	return e.withWrite(func() error {
-		s := e.takeSynthLayer()
+		s := e.synthLayer
+		e.synthLayer = nil
 		if s == nil {
 			return nil
 		}
@@ -679,20 +680,26 @@ func (e *Engine) FinishSynthesizedGrantLayer(ctx context.Context) error {
 		if err := s.takeErr(); err != nil && finishErr == nil {
 			finishErr = err
 		}
-		return finishErr
+		if finishErr != nil {
+			return finishErr
+		}
+		return e.ingestReadyLocked(ctx, s)
 	})
 }
 
 // AbortSynthesizedGrantLayer discards an in-flight layer session: already
 // ingested segments remain in the DB (their rows are idempotent overwrites on
-// retry), staged chunks are dropped. Safe to call with no open session.
-//
-// Deliberately does NOT take the engine write barrier — Close calls it after
-// setting the closing flag (withWrite would refuse), and it must stay callable
-// as a cleanup path when a writer holding writeMu panicked. The synthLayerMu
-// take keeps the pointer handoff race-free against Begin/Add/Finish/Close.
+// retry), staged chunks and merged-but-uningested SSTs are dropped. Safe to
+// call with no open session, and after Close (it does not touch the DB).
 func (e *Engine) AbortSynthesizedGrantLayer(ctx context.Context) error {
-	s := e.takeSynthLayer()
+	e.writeMu.Lock()
+	defer e.writeMu.Unlock()
+	return e.abortSynthesizedGrantLayerLocked(ctx)
+}
+
+func (e *Engine) abortSynthesizedGrantLayerLocked(_ context.Context) error {
+	s := e.synthLayer
+	e.synthLayer = nil
 	if s == nil {
 		return nil
 	}
@@ -700,7 +707,7 @@ func (e *Engine) AbortSynthesizedGrantLayer(ctx context.Context) error {
 		s.sorter.abort()
 	}
 	if s.segCh != nil {
-		// Make the worker drain queued segments without ingesting them.
+		// Make the worker drain queued segments without merging them.
 		s.setErr(errors.New("pebble: synthesized grant layer session aborted"))
 		close(s.segCh)
 		s.segWG.Wait()
@@ -742,7 +749,7 @@ func (e *Engine) putSynthesizedGrantContributionsBatch(ctx context.Context, reco
 			valScratch = val
 			// Deferred regime: synthesized grants are brand-new (no prior
 			// row) and never expandable (needsExpansion=false).
-			if err := batch.StageGrantPutDeferred(keyScratch, val, false, false); err != nil {
+			if err := batch.StageGrantPutDeferred(keyScratch, val, nil, false); err != nil {
 				return err
 			}
 		}
@@ -754,7 +761,7 @@ func (e *Engine) putSynthesizedGrantContributionsBatch(ctx context.Context, reco
 		// One atomic commit: rows and their obligations ride the same
 		// batch, so a primary commit landing without its index entries
 		// is unexpressible.
-		return batch.Commit(pebble.NoSync)
+		return batch.Commit(recordWriteOpts)
 	})
 }
 
@@ -765,7 +772,7 @@ func (e *Engine) putSynthesizedGrantContributionsBatch(ctx context.Context, reco
 // across the whole sync (not just within this batch). Primary + index key/value
 // encoding — including the proto marshal — runs in parallel across GOMAXPROCS
 // workers; a single goroutine then stages the pre-encoded bytes into a single
-// RecordBatch and commits it (NoSync during a fresh sync).
+// RecordBatch and commits it.
 //
 // Unlike PutGrantRecords this skips the per-record db.Get that PutGrantRecords
 // performs on every batch after the first of a fresh sync. That read-before-
@@ -876,15 +883,12 @@ func (e *Engine) UnsafePutUniqueGrantRecords(ctx context.Context, records ...*v3
 			// the typed op splices index keys from the primary key on the
 			// staging goroutine — cheaper than the encode-from-identity
 			// the parallel workers used to do, and unforgettable.
-			if err := batch.StageGrantPutInline(enc[i].priKey, enc[i].priVal, false, enc[i].needsExpansion); err != nil {
+			if err := batch.StageGrantPutInline(enc[i].priKey, enc[i].priVal, nil, enc[i].needsExpansion); err != nil {
 				return err
 			}
 		}
 
-		opts := writeOpts(e.opts.durability)
-		if e.IsFreshSync() {
-			opts = pebble.NoSync
-		}
+		opts := recordWriteOpts
 		// One atomic commit: rows and their obligations ride the same
 		// batch, so a primary commit landing without its index entries
 		// is unexpressible.
@@ -974,8 +978,7 @@ const grantDeleteBatchChunk = 1000
 // non-existent grant stays a true no-op and does not invalidate the
 // entitlement's digest partition.
 //
-// The chunk is also the unit of cancellation and of the sealed re-check —
-// see deleteGrantsByIdentities.
+// The chunk is also the unit of cancellation — see deleteGrantsByIdentities.
 func (e *Engine) DeleteGrantsByIdentityRefs(ctx context.Context, records ...*v3.GrantRecord) error {
 	if len(records) == 0 {
 		return nil
@@ -995,29 +998,20 @@ func (e *Engine) DeleteGrantsByIdentityRefs(ctx context.Context, records ...*v3.
 // single write-lock acquisition. chunk is a parameter so tests can drive the
 // boundary without a grantDeleteBatchChunk-sized fixture.
 //
-// Two things are re-checked at every chunk boundary, because taking the lock
-// once means the per-write checks withWrite would have made no longer happen
-// per write:
-//
-//   - ctx cancellation. A 90k-grant delete is otherwise uninterruptible.
-//     Aborting mid-way is safe: committed chunks are durable and the caller's
-//     dirty flag is already set, and a resumed sync re-derives its delete set
-//     and re-issues these deletes, which are idempotent.
-//   - e.sealed. withWrite's under-lock sealed re-check is the actual fence
-//     against writing past EndSync (seal() takes only sealMu and does not
-//     wait on writeWG), and it would otherwise run once for the whole call
-//     instead of once per write. Without this, a late chunk — and the digest
-//     invalidations it stages — could land after finalize began rebuilding
-//     the deferred by_principal index.
+// ctx is re-checked at every chunk boundary: a 90k-grant delete is otherwise
+// uninterruptible. Aborting mid-way is safe: committed chunks are durable
+// and the caller's dirty flag is already set, and a resumed sync re-derives
+// its delete set and re-issues these deletes, which are idempotent. The
+// sealed state cannot change mid-call: seal takes writeMu, which this holds.
 func (e *Engine) deleteGrantsByIdentities(ctx context.Context, chunk int, ids []grantIdentity) error {
 	if len(ids) == 0 {
 		return nil
 	}
 	// A non-positive chunk would make the loop below never advance, spinning
-	// forever while holding the write lock and a writeWG slot — an
-	// unkillable hang. No production caller can reach that (both pass the
-	// constant), so clamp rather than error: the call still does exactly what
-	// it was asked to do, just at the default chunking.
+	// forever while holding the write lock — an unkillable hang. No
+	// production caller can reach that (both pass the constant), so clamp
+	// rather than error: the call still does exactly what it was asked to
+	// do, just at the default chunking.
 	if chunk <= 0 {
 		chunk = grantDeleteBatchChunk
 	}
@@ -1026,9 +1020,6 @@ func (e *Engine) deleteGrantsByIdentities(ctx context.Context, chunk int, ids []
 		for start := 0; start < len(ids); start += chunk {
 			if err := ctx.Err(); err != nil {
 				return err
-			}
-			if e.sealed.Load() {
-				return ErrEngineSealed
 			}
 			end := min(start+chunk, len(ids))
 			if err := e.deleteGrantsByIdentityChunkLocked(ids[start:end]); err != nil {
@@ -1071,20 +1062,21 @@ func (e *Engine) deleteGrantsByIdentityChunkLocked(ids []grantIdentity) error {
 func (e *Engine) stageGrantDeleteIfPresentLocked(batch *rawdb.RecordBatch, id grantIdentity) (bool, error) {
 	key := encodeGrantIdentityKey(id)
 
-	// Existence probe only: delete of non-existent stays a no-op, and
-	// the typed op derives all cleanup keys from the primary key.
-	_, closer, err := e.db.Get(key)
+	oldVal, closer, err := e.db.Get(key)
 	if err != nil {
 		if errors.Is(err, pebble.ErrNotFound) {
 			return false, nil
 		}
 		return false, err
 	}
-	closer.Close()
-
-	if err := batch.StageGrantDelete(key); err != nil {
+	// StageGrantDelete derives the source-scope index cleanup from oldVal, so
+	// the closer stays open across the call. It copies what it keeps, so the
+	// staged batch holds nothing that outlives the release below.
+	if err := batch.StageGrantDelete(key, oldVal); err != nil {
+		closer.Close()
 		return false, err
 	}
+	closer.Close()
 	return true, nil
 }
 
@@ -1113,10 +1105,13 @@ func grantIndexKeys(r *v3.GrantRecord) [][]byte {
 	if err != nil {
 		return nil
 	}
-	keys := make([][]byte, 0, 2)
+	keys := make([][]byte, 0, 3)
 	keys = append(keys, encodeGrantByPrincipalIdentityIndexKey(id))
 	if r.GetNeedsExpansion() {
 		keys = append(keys, encodeGrantByNeedsExpansionIdentityIndexKey(id))
+	}
+	if scope := r.GetSourceScopeKey(); scope != "" {
+		keys = append(keys, encodeGrantBySourceScopeIndexKey(scope, id))
 	}
 	return keys
 }
@@ -1131,22 +1126,13 @@ func grantIndexKeys(r *v3.GrantRecord) [][]byte {
 // marker through the Open-wired RecordDerivers — a caller can no
 // longer stage a grant row and forget what it owes.
 
-// The deferred-marker arm/clear contract (CAS + durable key agreement
-// on both edges) lives on rawdb (ArmDeferredGrantIndex /
-// ClearDeferredGrantIndexMarker): the marker is write-side crash
-// state the typed record ops consume directly.
-
-// clearDeferredIdxPending drops both forms of the marker after a
-// successful rebuild, under the engine write barrier so the clear
-// can't interleave with a concurrent writer's arm (which would leave
-// the atomic flag armed but the durable marker deleted, or vice
-// versa). Ordering and failure semantics live in rawdb's
-// ClearDeferredGrantIndexMarker.
+// clearDeferredIdxPending clears the durable deferred-index obligations after
+// a successful rebuild while the engine remains sealed.
 func (e *Engine) clearDeferredIdxPending() error {
 	// AllowSealed: runs inside EndSync's sealed finalize window, right
 	// after the deferred build (see Adapter.EndSync).
 	return e.withWriteAllowSealed(func() error {
-		return e.db.ClearDeferredGrantIndexMarker()
+		return e.db.ClearDeferredGrantIndexMarkers()
 	})
 }
 

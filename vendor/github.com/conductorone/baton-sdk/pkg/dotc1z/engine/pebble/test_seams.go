@@ -1,5 +1,7 @@
 package pebble
 
+import "sync/atomic"
+
 // testSeams aggregates every test-only injection point on the Engine
 // behind a single field (Engine.test), so the production struct isn't
 // littered with hook fields and new seams have one obvious home. All
@@ -11,6 +13,9 @@ package pebble
 // default `go test ./...` workflow (the package under test would need
 // the tag to compile the hook sites).
 type testSeams struct {
+	ledgerBeginPassHook      func() error
+	ledgerBeginExpandingHook func() error
+	ledgerArchiveHook        func(stage string) error
 	// digestBuildHook fires at named points inside
 	// buildGrantDigestsFromSpill (grant_digest_build_crash_test.go);
 	// digestNodeFlushBytes overrides the digest fold's batch
@@ -25,7 +30,7 @@ type testSeams struct {
 
 	// endSyncPreFlushHook, when non-nil, runs inside endSyncFinalize
 	// IMMEDIATELY after the ended_at stamp commits — before the stats
-	// sidecar write and the EndFreshSync durability flush. Tests
+	// sidecar write and the FinishSync durability flush. Tests
 	// crash-clone the FS here to pin the WAL-prefix-durability
 	// contract: a Sync commit's WAL fsync also hardens every earlier
 	// NoSync page commit (sequential WAL; rotated WALs sync at
@@ -49,6 +54,42 @@ type testSeams struct {
 	// post-arm obligation and no hook.
 	recordCommitHook func() error
 
+	// sourceCacheReplayCommitHook runs immediately before each bounded replay
+	// batch commit. It provides deterministic high-water telemetry and a
+	// per-chunk failure seam without changing the replay iterator.
+	sourceCacheReplayCommitHook func(kind string, rows int, final bool) error
+	sourceCacheReplayBatchRows  int
+
+	// sourceCacheReplayClearCommitHook runs immediately before each bounded
+	// destination-clear batch commit. Replacement clear and replay copy are
+	// distinct commit loops and therefore require distinct failure seams.
+	sourceCacheReplayClearCommitHook func(kind string, rows int, final bool) error
+
+	// sourceCacheReplayReadHook runs before each source index row is consumed.
+	// It supplies deterministic source-iteration errors at exact row cuts.
+	sourceCacheReplayReadHook func(kind string, row int) error
+	// sourceCacheReplayIteratorErrorHook runs at the real Iterator.Error
+	// disposition after source iteration and before the final batch commit.
+	// It proves that an iterator terminal error cannot be swallowed or followed
+	// by publication of the final staged rows.
+	sourceCacheReplayIteratorErrorHook func(kind string) error
+
+	// sourceCacheDeleteCommitHook runs before each bounded scoped-tombstone
+	// commit. sourceCacheDeleteBatchRows lowers the production batch limit so
+	// tests can exercise interrupted multi-batch retry without whale fixtures.
+	sourceCacheDeleteCommitHook func(kind string, rows int, final bool) error
+	sourceCacheDeleteBatchRows  int
+
+	// sourceCacheManifestWriteHook runs immediately before a manifest entry is
+	// committed, after the value has been constructed.
+	sourceCacheManifestWriteHook func() error
+
+	// poisonLogSetCap overrides the poison-warning dedup-set bound (engine.go,
+	// production 4096) so a test can reach the suppression branch with a
+	// handful of scopes: past the bound, unseen scopes stop logging behind a
+	// single one-time notice while already-seen scopes still deduplicate.
+	poisonLogSetCap int
+
 	// endSyncStampHook, when non-nil, runs immediately before the
 	// ended_at stamp's PutSyncRunRecord commit in endSyncFinalize —
 	// the in-process analog of the stamp commit failing. The
@@ -56,4 +97,16 @@ type testSeams struct {
 	// stored record stays unstamped and the sync stays discoverable
 	// as unfinished (resumable).
 	endSyncStampHook func() error
+
+	// Lets the SST-residue test show that the purge, not the scrub, removes the
+	// bytes.
+	skipLedgerResiduePurge bool
+
+	// Nothing else observes a compaction that did not happen; pebble's own
+	// Compact.Count folds in automatic compactions.
+	ledgerResiduePurges atomic.Int64
+
+	// The last finalize attempt's seal timings, read by BenchmarkLedgerSealCost
+	// and the seal-cost tests through LastSealCost after EndSync returns.
+	sealCost atomic.Pointer[SealCost]
 }

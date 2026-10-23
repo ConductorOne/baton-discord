@@ -245,12 +245,16 @@ func WithC1FV2GrantsWriter(enabled bool) C1FOption {
 }
 
 // Returns a C1File instance for the given db filepath.
+//
+// The raw DB handle is closed on every init failure; caller-supplied raw
+// paths are never deleted on failure (NewC1ZFile's cleanupDbDir still
+// removes the SDK's own decoded temp dir).
 func NewC1File(ctx context.Context, dbFilePath string, opts ...C1FOption) (*C1File, error) {
 	ctx, span := tracer.Start(ctx, "NewC1File")
 	var err error
 	defer func() { uotel.EndSpanWithError(span, err) }()
 
-	rawDB, err := sql.Open("sqlite", dbFilePath)
+	rawDB, err := openSQLite(ctx, dbFilePath)
 	if err != nil {
 		return nil, fmt.Errorf("new-c1-file: error opening raw db: %w", err)
 	}
@@ -316,14 +320,22 @@ func NewC1File(ctx context.Context, dbFilePath string, opts ...C1FOption) (*C1Fi
 		c1File.engine = c1zstore.EngineSQLite
 	}
 
+	// A rejected file must not leak its handle.
+	initFailed := func(primary error) error {
+		if closeErr := c1File.closeRawDB(ctx); closeErr != nil {
+			return errors.Join(primary, fmt.Errorf("new-c1-file: error closing raw db after failed init: %w", closeErr))
+		}
+		return primary
+	}
+
 	err = c1File.validateDb(ctx)
 	if err != nil {
-		return nil, err
+		return nil, initFailed(err)
 	}
 
 	err = c1File.init(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("new-c1-file: error initializing c1file: %w", err)
+		return nil, initFailed(fmt.Errorf("new-c1-file: error initializing c1file: %w", err))
 	}
 
 	return c1File, nil
@@ -348,7 +360,9 @@ type c1zOptions struct {
 	disableGrantDigestIndex bool
 
 	// engine is the storage engine to use for newly created files.
-	// Reads dispatch on magic byte regardless. Default EngineSQLite.
+	// Reads dispatch on magic byte regardless. NewStore defaults an
+	// unset engine to EnginePebble; NewC1ZFile (SQLite-only) normalizes
+	// unset to EngineSQLite.
 	engine c1zstore.Engine
 
 	// payloadEncoding controls the v3 envelope payload framing. Only
@@ -433,8 +447,10 @@ func WithSyncLimit(limit int) C1ZOption {
 }
 
 // WithEngine selects the storage engine for newly created .c1z files.
-// Default is EngineSQLite (v1 format). EnginePebble enables the v3
-// engine.
+// Under NewStore the default is EnginePebble (v3 format); EngineSQLite
+// selects the legacy v1 engine. NewC1ZFile does not share that default:
+// it is the SQLite-only constructor, treats an unset engine as
+// EngineSQLite, and rejects a writable EnginePebble request.
 //
 // Reading existing files dispatches on the file's magic byte and is
 // independent of this option.
@@ -611,8 +627,6 @@ var ErrReadOnly = errors.New("c1z: read only mode")
 // cannot truncate the c1z mid-finalize; the new-root finalize span links
 // back to the caller's trace for navigability without bloating the
 // parent trace.
-//
-//nolint:nonamedreturns // named return required so the deferred span captures all early-return error paths
 func (c *C1File) Close(ctx context.Context) (retErr error) {
 	ctx, span := tracer.Start(ctx, "C1File.Close")
 	defer func() { uotel.EndSpanWithError(span, retErr) }()
@@ -992,6 +1006,14 @@ func (c *C1File) InitTables(ctx context.Context) (bool, error) {
 
 	l := ctxzap.Extract(ctx).With(zap.String("db_file_path", c.dbFilePath))
 
+	// Metadata-only schema guard: reject hostile/unsupported executable
+	// schema (triggers, views, virtual/generated-column SDK tables) BEFORE
+	// any DDL/DML — the first Schema() exec, the migrations, and every
+	// later statement must never run against file-authored SQL objects.
+	if err := validateSQLiteSchema(ctx, c.rawDb, "main"); err != nil {
+		return false, fmt.Errorf("c1file-init-tables: %w", err)
+	}
+
 	// Get schema version before creating tables/indexes/running migrations.
 	schemaVersion, err := getSchemaVersion(ctx, c.db)
 	if err != nil {
@@ -1065,8 +1087,9 @@ func (c *C1File) InitTables(ctx context.Context) (bool, error) {
 					zap.String("table_name", t.Name()))
 			} else {
 				for _, idxName := range deferrable {
-					// Identifier comes from our own DDL; quote it for hygiene.
-					if _, derr := c.db.ExecContext(ctx, fmt.Sprintf(`DROP INDEX IF EXISTS "%s"`, idxName)); derr != nil {
+					// idxName comes from the opened file's own schema
+					// (PRAGMA index_list), so it is untrusted.
+					if _, derr := c.db.ExecContext(ctx, fmt.Sprintf(`DROP INDEX IF EXISTS %s`, quoteIdentifier(idxName))); derr != nil {
 						return false, fmt.Errorf("c1file-init-tables: error deferring index %s on %s: %w", idxName, t.Name(), derr)
 					}
 				}
@@ -1562,12 +1585,35 @@ func (c *C1File) CurrentDBSizeBytes() (int64, error) {
 // compile time instead of silently turning off the expand-log size fields.
 var _ connectorstore.DBSizeProvider = (*C1File)(nil)
 
+// AttachFile attaches another database to this file's connection and
+// validates the attached catalog's schema before returning it for use.
+//
+// The ATTACH, the validation, and a rejection-DETACH all run on ONE leased
+// *sql.Conn: attachments are per-connection state, so validating any other
+// connection would prove nothing. If the rejection-DETACH fails, the host
+// connection is closed rather than left holding an unvalidated attachment.
+//
+// Consumers of C1FileAttached run on the single-connection pool
+// (SetMaxOpenConns(1)), where the leased connection is the pool's only
+// connection, so later statements see the same attachment.
 func (c *C1File) AttachFile(other *C1File, dbName string) (*C1FileAttached, error) {
-	_, err := c.db.Exec(`ATTACH DATABASE ? AS ?`, other.dbFilePath, dbName)
+	ctx := context.Background()
+	conn, err := c.rawDb.Conn(ctx)
 	if err != nil {
+		return nil, fmt.Errorf("attach-file: error leasing connection: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	if _, err := conn.ExecContext(ctx, "ATTACH DATABASE ? AS ?", other.dbFilePath, dbName); err != nil {
 		return nil, err
 	}
-
+	if err := validateSQLiteSchema(ctx, conn, dbName); err != nil {
+		if _, detachErr := conn.ExecContext(ctx, "DETACH DATABASE ?", dbName); detachErr != nil {
+			closeErr := c.closeRawDB(ctx)
+			return nil, errors.Join(err, fmt.Errorf("attach-file: rejection-detach failed; host closed: %w", detachErr), closeErr)
+		}
+		return nil, err
+	}
 	return &C1FileAttached{
 		safe: true,
 		file: c,

@@ -16,7 +16,7 @@ package rawdb
 //   - INLINE (StageGrantPutInline / StageGrantDelete): by_principal
 //     and by_needs_expansion maintained inline; overwrite/delete
 //     cleans BOTH; digest invalidation when digests are present. The
-//     PutGrantRecords and IfNewer paths, and post-seal deletes.
+//     PutGrantRecords paths and post-seal deletes.
 //   - DEFERRED (StageGrantPutDeferred): the durable deferred-index
 //     marker is armed FIRST (ArmDeferredGrantIndex — CAS-cheap per
 //     record, crash-contract-ordered before the batch can commit),
@@ -39,6 +39,8 @@ package rawdb
 
 import (
 	"fmt"
+
+	"google.golang.org/protobuf/encoding/protowire"
 )
 
 // Family prefixes for the keyspace assertions.
@@ -47,11 +49,108 @@ var (
 	resourcePrimaryPrefix     = []byte{VersionV3, TypeResource}
 	entitlementPrimaryPrefix  = []byte{VersionV3, TypeEntitlement}
 	resourceTypePrimaryPrefix = []byte{VersionV3, TypeResourceType}
+	assetPrimaryPrefix        = []byte{VersionV3, TypeAsset}
+	ledgerRowPrefix           = []byte{VersionV3, TypeLedger, ledgerKindRow}
 )
+
+func (rb *RecordBatch) StageAssetPut(key, val []byte) error {
+	if err := assertFamily("StageAssetPut", key, assetPrimaryPrefix); err != nil {
+		return err
+	}
+	return rb.core.Set(key, val)
+}
+
+// On RecordBatch, not its own batch: the row means "the records staged
+// alongside me landed", so there is no standalone ledger writer.
+func (rb *RecordBatch) StageLedgerRow(key, val []byte) error {
+	if err := assertFamily("StageLedgerRow", key, ledgerRowPrefix); err != nil {
+		return err
+	}
+	return rb.core.Set(key, val)
+}
+
+// On-disk: a bare fact is 0x01; a valued fact is 0x02 followed by the value.
+const (
+	ledgerFactBare   = 0x01
+	ledgerFactValued = 0x02
+)
+
+func (rb *RecordBatch) StageLedgerFact(key []byte) error {
+	if err := assertFamily("StageLedgerFact", key, LedgerFactPrefix()); err != nil {
+		return err
+	}
+	return rb.core.Set(key, []byte{ledgerFactBare})
+}
+
+func (rb *RecordBatch) StageLedgerFactValue(key []byte, value string) error {
+	if value == "" {
+		return rb.StageLedgerFact(key)
+	}
+	if err := assertFamily("StageLedgerFactValue", key, LedgerFactPrefix()); err != nil {
+		return err
+	}
+	val := make([]byte, 0, 1+len(value))
+	val = append(val, ledgerFactValued)
+	return rb.core.Set(key, append(val, value...))
+}
+
+func DecodeLedgerFactValue(val []byte) string {
+	if len(val) >= 1 && val[0] == ledgerFactValued {
+		return string(val[1:])
+	}
+	return ""
+}
+
+// The caller writes its cached total, never a delta.
+func (rb *RecordBatch) StageLedgerCounterBucket(key, val []byte) error {
+	if err := assertFamily("StageLedgerCounterBucket", key, LedgerCounterPrefix()); err != nil {
+		return err
+	}
+	return rb.core.Set(key, val)
+}
+
+// One unit: a frontier without a cleared token would be taken over twice; a
+// cleared token without a frontier would lose the stack.
+func (rb *RecordBatch) StageLedgerTakeover(frontierVal, syncRunVal []byte) error {
+	if err := rb.core.Set(LedgerFrontierKey(), frontierVal); err != nil {
+		return err
+	}
+	return rb.core.Set(SyncRunKey(), syncRunVal)
+}
+
+func (rb *RecordBatch) StageLedgerFrontier(val []byte) error {
+	return rb.core.Set(LedgerFrontierKey(), val)
+}
 
 func assertFamily(op string, key, prefix []byte) error {
 	if len(key) < len(prefix) || string(key[:len(prefix)]) != string(prefix) {
 		return fmt.Errorf("rawdb.%s: key %x is outside this op's keyspace family (want prefix %x) — use the family op that owns that keyspace", op, key, prefix)
+	}
+	return nil
+}
+
+// StageSourceCacheReplayInvalidation removes validators that cannot describe a
+// compaction output. Rebuild compactions also drop all source-scope indexes;
+// fold compactions retain them to avoid rewriting the inherited base.
+// The wipe covers the whole source-cache family — poison markers go with
+// the manifest entries they qualify (no entry, nothing to refuse).
+func (rb *RecordBatch) StageSourceCacheReplayInvalidation(dropScopeIndexes bool) error {
+	lo, hi := SourceCacheFamilyBounds()
+	if err := rb.core.DeleteRange(lo, hi); err != nil {
+		return err
+	}
+	if !dropScopeIndexes {
+		return nil
+	}
+	for _, indexID := range []byte{
+		IdxResourceBySourceScope,
+		IdxEntitlementBySourceScope,
+		IdxGrantBySourceScope,
+	} {
+		lo := []byte{VersionV3, TypeIndex, indexID}
+		if err := rb.core.DeleteRange(lo, UpperBound(lo)); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -68,7 +167,7 @@ func assertFamily(op string, key, prefix []byte) error {
 // (the write path has it; deriving it here would force a value scan).
 // Contrast StageResourcePut, which takes the prior VALUE bytes —
 // resource index keys derive from the value (parent ref), not the key.
-func (rb *RecordBatch) StageGrantPutInline(key, val []byte, hadOldVal, needsExpansion bool) error {
+func (rb *RecordBatch) StageGrantPutInline(key, val, oldVal []byte, needsExpansion bool) error {
 	if err := assertFamily("StageGrantPutInline", key, grantPrimaryPrefix); err != nil {
 		return err
 	}
@@ -76,7 +175,7 @@ func (rb *RecordBatch) StageGrantPutInline(key, val []byte, hadOldVal, needsExpa
 	if !ok {
 		return fmt.Errorf("rawdb.StageGrantPutInline: grant key %x did not decode as a 6-segment identity", key)
 	}
-	if hadOldVal {
+	if oldVal != nil {
 		if err := rb.deleteByPrincipalKey(key); err != nil {
 			return err
 		}
@@ -95,6 +194,9 @@ func (rb *RecordBatch) StageGrantPutInline(key, val []byte, hadOldVal, needsExpa
 			return err
 		}
 	}
+	if err := rb.stageSourceScopeChange(key, val, oldVal, 10); err != nil {
+		return err
+	}
 	return rb.stageGrantDigestInvalidation(key, sep4)
 }
 
@@ -110,7 +212,7 @@ func (rb *RecordBatch) StageGrantPutInline(key, val []byte, hadOldVal, needsExpa
 // a stale-but-present digest, a present-means-exact hole. Key-derived
 // cleanup cannot be skipped; tombstones on absent index keys are
 // harmless.
-func (rb *RecordBatch) StageGrantDelete(key []byte) error {
+func (rb *RecordBatch) StageGrantDelete(key, oldVal []byte) error {
 	if err := assertFamily("StageGrantDelete", key, grantPrimaryPrefix); err != nil {
 		return err
 	}
@@ -127,6 +229,9 @@ func (rb *RecordBatch) StageGrantDelete(key []byte) error {
 	if err := rb.core.b.Delete(key, nil); err != nil {
 		return err
 	}
+	if err := rb.stageSourceScopeCleanup(key, oldVal, 10); err != nil {
+		return err
+	}
 	return rb.stageGrantDigestInvalidation(key, sep4)
 }
 
@@ -138,7 +243,7 @@ func (rb *RecordBatch) StageGrantDelete(key []byte) error {
 // wholesale at seal, which also clears stale entries), and the digest
 // invalidation is staged. hadOldVal selects overwrite cleanup of the
 // needs_expansion entry.
-func (rb *RecordBatch) StageGrantPutDeferred(key, val []byte, hadOldVal, needsExpansion bool) error {
+func (rb *RecordBatch) StageGrantPutDeferred(key, val, oldVal []byte, needsExpansion bool) error {
 	if err := assertFamily("StageGrantPutDeferred", key, grantPrimaryPrefix); err != nil {
 		return err
 	}
@@ -149,7 +254,7 @@ func (rb *RecordBatch) StageGrantPutDeferred(key, val []byte, hadOldVal, needsEx
 	if err := rb.db.ArmDeferredGrantIndex(); err != nil {
 		return err
 	}
-	if hadOldVal {
+	if oldVal != nil {
 		if err := rb.deleteNeedsExpansionKey(key); err != nil {
 			return err
 		}
@@ -162,7 +267,19 @@ func (rb *RecordBatch) StageGrantPutDeferred(key, val []byte, hadOldVal, needsEx
 			return err
 		}
 	}
+	if err := rb.stageSourceScopeChange(key, val, oldVal, 10); err != nil {
+		return err
+	}
 	return rb.stageGrantDigestInvalidation(key, sep4)
+}
+
+// StageGrantPutTrusted stages a blind grant overwrite and arms the additional
+// by_needs_expansion rebuild required when no prior value was read.
+func (rb *RecordBatch) StageGrantPutTrusted(key, val []byte, needsExpansion bool) error {
+	if err := rb.StageGrantPutDeferred(key, val, nil, needsExpansion); err != nil {
+		return err
+	}
+	return rb.db.ArmDeferredNeedsExpansionIndex()
 }
 
 // StageGrantOrphanIndexHeal stages the removal of ONE orphan
@@ -186,6 +303,21 @@ func (rb *RecordBatch) StageGrantOrphanIndexHeal(primaryKey []byte) error {
 		return fmt.Errorf("rawdb.StageGrantOrphanIndexHeal: grant key %x did not decode as a 6-segment identity", primaryKey)
 	}
 	return rb.deleteByPrincipalKey(primaryKey)
+}
+
+// StageSourceScopeOrphanIndexDelete removes one by_source_scope entry whose
+// primary row is absent. The caller must establish absence while holding the
+// engine write barrier.
+func (rb *RecordBatch) StageSourceScopeOrphanIndexDelete(indexKey []byte) error {
+	if len(indexKey) < 3 || indexKey[0] != VersionV3 || indexKey[1] != TypeIndex {
+		return fmt.Errorf("rawdb.StageSourceScopeOrphanIndexDelete: key %x is not an index key", indexKey)
+	}
+	switch indexKey[2] {
+	case IdxGrantBySourceScope, IdxEntitlementBySourceScope, IdxResourceBySourceScope:
+		return rb.core.b.Delete(indexKey, nil)
+	default:
+		return fmt.Errorf("rawdb.StageSourceScopeOrphanIndexDelete: key %x is outside source-scope families", indexKey)
+	}
 }
 
 func (rb *RecordBatch) setByPrincipalKey(key []byte) error {
@@ -278,9 +410,12 @@ func (rb *RecordBatch) StageResourcePut(key, val, oldVal []byte, childRT, childI
 		return err
 	}
 	if parentID == "" {
-		return nil
+		return rb.stageSourceScopeChange(key, val, oldVal, 12)
 	}
-	return rb.core.b.Set(EncodeResourceByParentIndexKey(parentRT, parentID, childRT, childID), nil, nil)
+	if err := rb.core.b.Set(EncodeResourceByParentIndexKey(parentRT, parentID, childRT, childID), nil, nil); err != nil {
+		return err
+	}
+	return rb.stageSourceScopeChange(key, val, oldVal, 12)
 }
 
 // StageResourceDelete stages one resource row's removal plus its
@@ -290,6 +425,9 @@ func (rb *RecordBatch) StageResourceDelete(key, oldVal []byte, childRT, childID 
 		return err
 	}
 	if err := rb.stageResourceParentDelete(oldVal, childRT, childID); err != nil {
+		return err
+	}
+	if err := rb.stageSourceScopeCleanup(key, oldVal, 12); err != nil {
 		return err
 	}
 	return rb.core.b.Delete(key, nil)
@@ -315,19 +453,158 @@ func (rb *RecordBatch) stageResourceParentDelete(oldVal []byte, childRT, childID
 // obligation and stays with the engine's write paths.
 
 // StageEntitlementPut stages one entitlement row.
-func (rb *RecordBatch) StageEntitlementPut(key, val []byte) error {
+func (rb *RecordBatch) StageEntitlementPut(key, val, oldVal []byte) error {
 	if err := assertFamily("StageEntitlementPut", key, entitlementPrimaryPrefix); err != nil {
 		return err
 	}
-	return rb.core.b.Set(key, val, nil)
+	if err := rb.core.b.Set(key, val, nil); err != nil {
+		return err
+	}
+	return rb.stageSourceScopeChange(key, val, oldVal, 11)
 }
 
 // StageEntitlementDelete stages one entitlement row's removal.
-func (rb *RecordBatch) StageEntitlementDelete(key []byte) error {
+func (rb *RecordBatch) StageEntitlementDelete(key, oldVal []byte) error {
 	if err := assertFamily("StageEntitlementDelete", key, entitlementPrimaryPrefix); err != nil {
 		return err
 	}
+	if err := rb.stageSourceScopeCleanup(key, oldVal, 11); err != nil {
+		return err
+	}
 	return rb.core.b.Delete(key, nil)
+}
+
+// stageSourceScopeCleanup stages the by_source_scope entry removal a
+// record DELETE owes, gated on sourceScopeMayExist exactly like
+// stageSourceScopeChange: an unarmed gate certifies the index families
+// are empty, so there is no entry to remove and the prior-value scan is
+// skipped. A malformed prior value fails the delete rather than dropping
+// the primary and stranding its index — the same policy the put path
+// applies to the same unreadable bytes, so a corrupt row is uniformly
+// immovable instead of deletable-but-not-overwritable.
+//
+// Deleting a stamped row on behalf of any actor OTHER than its own
+// scope (actingSourceScope, default unscoped — interactive deletes,
+// external-principal reconciliation, SDK maintenance passes) also
+// stages the scope's poison marker (CO-015): the scope's manifest entry
+// vouches for a row set this delete just shrank, so a later 304-replay
+// of the scope would silently drop the row. A scope's own tombstone
+// paths set actingSourceScope and stay poison-free — shrinking yourself
+// is the legitimate delta flow, and the manifest validator rotates with
+// it.
+func (rb *RecordBatch) stageSourceScopeCleanup(key, oldVal []byte, field protowire.Number) error {
+	if !rb.db.sourceScopeMayExist.Load() {
+		return nil
+	}
+	oldScope, err := ScanSourceScopeKeyRaw(oldVal, field)
+	if err != nil {
+		return err
+	}
+	if oldScope == "" {
+		return nil
+	}
+	if oldScope != rb.actingSourceScope {
+		if err := rb.stageSourceScopePoison(key, oldScope, "row deleted by an actor outside its scope"); err != nil {
+			return err
+		}
+	}
+	return rb.deleteSourceScopeKey(key, oldScope)
+}
+
+// stageSourceScopeChange stages the by_source_scope index obligations a
+// record put owes. The new value is ALWAYS scanned (an O(#fields) header
+// walk), so a stamped record arms the sourceScopeMayExist gate right here
+// — no caller can forget to. The PRIOR value is scanned only when the
+// gate was already armed: an unarmed gate certifies the index families
+// are empty, so a stale stamp in oldVal has no entry to clean up (and
+// callers on that fast path may skip fetching oldVal entirely — see
+// PutEntitlementRecords).
+func (rb *RecordBatch) stageSourceScopeChange(key, val, oldVal []byte, field protowire.Number) error {
+	mayExist := rb.db.sourceScopeMayExist.Load()
+	newScope, err := ScanSourceScopeKeyRaw(val, field)
+	if err != nil {
+		return err
+	}
+	if newScope == "" && !mayExist {
+		return nil
+	}
+	if mayExist {
+		oldScope, err := ScanSourceScopeKeyRaw(oldVal, field)
+		if err != nil {
+			return err
+		}
+		if oldScope != "" && oldScope != newScope {
+			// Cross-scope restamp (including a stamp-clearing unscoped
+			// overwrite): the old scope silently loses this row, so it is
+			// poisoned (CO-015). Detection is order-independent — whichever
+			// scope writes second observes the first's stamp in oldVal.
+			if err := rb.stageSourceScopePoison(key, oldScope, "cross-scope restamp"); err != nil {
+				return err
+			}
+			if err := rb.deleteSourceScopeKey(key, oldScope); err != nil {
+				return err
+			}
+		}
+	}
+	if newScope == "" {
+		return nil
+	}
+	rb.db.sourceScopeMayExist.Store(true)
+	indexKey, ok := AppendBySourceScopeKeyFromPrimary(rb.scratch[:0], key, newScope)
+	rb.scratch = indexKey
+	if !ok {
+		return fmt.Errorf("rawdb: cannot derive source-scope index from key %x", key)
+	}
+	return rb.core.b.Set(indexKey, nil, nil)
+}
+
+func (rb *RecordBatch) deleteSourceScopeKey(key []byte, scopeKey string) error {
+	indexKey, ok := AppendBySourceScopeKeyFromPrimary(rb.scratch[:0], key, scopeKey)
+	rb.scratch = indexKey
+	if !ok {
+		return fmt.Errorf("rawdb: cannot derive source-scope index from key %x", key)
+	}
+	return rb.core.b.Delete(indexKey, nil)
+}
+
+// stageSourceScopePoison stages the durable poison marker for the scope
+// that just lost the row at key, rides the same batch as the losing
+// mutation (atomic: no crash image holds the loss without the verdict),
+// and records the event for post-commit observer delivery. Staging is
+// deduplicated per BATCH only — a page of restamps against one scope
+// stages one marker and delivers one event, but batches re-mint per
+// chunk, so the observer sees one event per chunk that poisons the
+// scope. Log-level dedup (once per (kind, scope) per open) lives in the
+// engine's observer, which owns cross-batch state.
+func (rb *RecordBatch) stageSourceScopePoison(key []byte, lostScope, cause string) error {
+	rowKind, ok := RowKindForRecordType(key[1])
+	if !ok {
+		return fmt.Errorf("rawdb: poison: key %x is not a record primary", key)
+	}
+	ev := PoisonEvent{RowKind: rowKind, ScopeKey: lostScope, Cause: cause}
+	if rb.poisonStaged == nil {
+		rb.poisonStaged = make(map[PoisonEvent]struct{})
+	}
+	if _, dup := rb.poisonStaged[ev]; dup {
+		return nil
+	}
+	if err := rb.core.b.Set(SourceCachePoisonKey(rowKind, lostScope), nil, nil); err != nil {
+		return err
+	}
+	rb.poisonStaged[ev] = struct{}{}
+	rb.poisonEvents = append(rb.poisonEvents, ev)
+	return nil
+}
+
+// SetActingSourceScope declares the scope on whose behalf this batch's
+// DELETES act. A delete of a row stamped with the acting scope is that
+// scope shrinking itself (the legitimate delta-tombstone and
+// replay-replacement flows) and stages no poison; every other stamped
+// delete poisons the row's scope. The default — unscoped — is the
+// conservative setting: an actor that has not identified itself poisons
+// whatever stamped rows it removes.
+func (rb *RecordBatch) SetActingSourceScope(scope string) {
+	rb.actingSourceScope = scope
 }
 
 // StageResourceTypePut stages one resource-type row.
@@ -358,9 +635,148 @@ func (rb *RecordBatch) StageResourceTypeDelete(key []byte) error {
 // fold compactor.
 type FoldBatch struct {
 	batch
+	db *DB
 }
 
 // NewFoldBatch mints a generic staged batch for the compactor's
 // keep-newer fold and overlay writers. Engine production code must
 // not use it; see the choke-point meta-tests.
-func (d *DB) NewFoldBatch() *FoldBatch { return &FoldBatch{batch{b: d.newBatch()}} }
+//
+// A fold destination inherited from a scoped base is already armed by
+// ProbeSourceScopeMayExist at Open. Rebuild paths start empty and must not pay
+// source-scope maintenance merely because they share this raw batch surface.
+// FoldBatch.Set therefore arms the gate only when a caller actually stages a
+// by_source_scope key.
+func (d *DB) NewFoldBatch() *FoldBatch {
+	d.acct.fold.Add(1)
+	return &FoldBatch{
+		batch: batch{b: d.newBatch(), open: &d.acct.fold},
+		db:    d,
+	}
+}
+
+// Set stages a raw compactor key and self-arms the source-scope obligation
+// gate exactly when the raw surface introduces an entry that typed record ops
+// cannot observe.
+func (b *FoldBatch) Set(key, val []byte) error {
+	if len(key) >= 3 &&
+		key[0] == VersionV3 &&
+		key[1] == TypeIndex {
+		switch key[2] {
+		case IdxResourceBySourceScope, IdxEntitlementBySourceScope, IdxGrantBySourceScope:
+			b.db.sourceScopeMayExist.Store(true)
+		}
+	}
+	return b.batch.Set(key, val)
+}
+
+// The token-bearing part of the ledger family: rows, pending work, scheduling
+// relations, frontier. Facts, counters and the declaration stay.
+func (rb *RecordBatch) StageLedgerDisposeTokens() error {
+	lo, hi := LedgerRowBounds()
+	if err := rb.core.DeleteRange(lo, hi); err != nil {
+		return err
+	}
+	pendingLo, pendingHi := LedgerPendingBounds()
+	if err := rb.core.DeleteRange(pendingLo, pendingHi); err != nil {
+		return err
+	}
+	scheduled := LedgerSchedulingPrefix()
+	if err := rb.core.DeleteRange(scheduled, UpperBound(scheduled)); err != nil {
+		return err
+	}
+	return rb.core.Delete(LedgerFrontierKey())
+}
+
+func (rb *RecordBatch) StageLedgerArchive(archiveKey, archiveVal []byte) error {
+	if err := assertFamily("StageLedgerArchive", archiveKey, []byte{VersionV3, TypeEngineMeta}); err != nil {
+		return err
+	}
+	return rb.core.Set(archiveKey, archiveVal)
+}
+
+// StageKeyspaceVersion writes the layout stamp in the same batch as the
+// ledger write it describes: the in-flight stamp must never be durable
+// without the rows, nor the rows without it.
+func (rb *RecordBatch) StageKeyspaceVersion(key, val []byte) error {
+	if err := assertFamily("StageKeyspaceVersion", key, []byte{VersionV3, TypeEngineMeta}); err != nil {
+		return err
+	}
+	return rb.core.Set(key, val)
+}
+
+// StageLedgerDrop removes the whole ledger family.
+func (rb *RecordBatch) StageLedgerDrop() error {
+	lo, hi := LedgerBounds()
+	return rb.core.DeleteRange(lo, hi)
+}
+
+// The seal's one durable step: archive, the family's remaining keys, and the
+// sync-run record carrying ended_at. Retained history keeps rows, facts and
+// counters; the declaration, the scheduling relations and the frontier (which
+// holds a legacy token verbatim) go in both modes.
+func (rb *RecordBatch) StageLedgerSeal(archiveKey, archiveVal, syncRunVal []byte, retained bool) error {
+	if err := rb.StageLedgerArchive(archiveKey, archiveVal); err != nil {
+		return err
+	}
+	scheduled := LedgerSchedulingPrefix()
+	if err := rb.core.DeleteRange(scheduled, UpperBound(scheduled)); err != nil {
+		return err
+	}
+	if err := rb.core.Delete(LedgerFrontierKey()); err != nil {
+		return err
+	}
+	if !retained {
+		lo, hi := LedgerFactBounds()
+		if err := rb.core.DeleteRange(lo, hi); err != nil {
+			return err
+		}
+		lo, hi = LedgerCounterBounds()
+		if err := rb.core.DeleteRange(lo, hi); err != nil {
+			return err
+		}
+	}
+	if err := rb.core.Delete(LedgerWorkStateKey()); err != nil {
+		return err
+	}
+	return rb.core.Set(SyncRunKey(), syncRunVal)
+}
+
+func (rb *RecordBatch) StageLedgerFactDelete(key []byte) error {
+	if err := assertFamily("StageLedgerFactDelete", key, LedgerFactPrefix()); err != nil {
+		return err
+	}
+	return rb.core.Delete(key)
+}
+
+func (rb *RecordBatch) StagePendingWork(key, value []byte) error {
+	if err := assertFamily("StagePendingWork", key, LedgerPendingPrefix()); err != nil {
+		return err
+	}
+	return rb.core.Set(key, value)
+}
+
+func (rb *RecordBatch) StagePendingWorkDelete(key []byte) error {
+	if err := assertFamily("StagePendingWorkDelete", key, LedgerPendingPrefix()); err != nil {
+		return err
+	}
+	return rb.core.Delete(key)
+}
+
+func (rb *RecordBatch) StageLedgerWorkState(value []byte) error {
+	return rb.core.Set(LedgerWorkStateKey(), value)
+}
+
+func (rb *RecordBatch) StageLedgerScheduling(key []byte) error {
+	if err := assertFamily("StageLedgerScheduling", key, LedgerSchedulingPrefix()); err != nil {
+		return err
+	}
+	return rb.core.Set(key, []byte{1})
+}
+
+func (rb *RecordBatch) StageLedgerCounterDelete(key []byte) error {
+	if err := assertFamily("StageLedgerCounterDelete", key, LedgerCounterPrefix()); err != nil {
+		return err
+	}
+	return rb.core.Delete(key)
+}
