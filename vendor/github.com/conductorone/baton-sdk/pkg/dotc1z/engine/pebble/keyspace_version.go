@@ -27,6 +27,19 @@ import (
 // future incompatible key-encoding change.
 const keyspaceVersion uint32 = 2
 
+// The layout is v2 plus the additive ledger family; the stamp exists so a
+// token-only SDK refuses the file at Open instead of resuming a sync whose
+// truth is in a family it cannot read. Staged in the batch that writes the
+// first ledger row and restored to keyspaceVersion in the seal and Drop
+// batches, so finished files open under v2 readers.
+const keyspaceVersionLedgerInFlight uint32 = 3
+
+// A package var so a test can shrink it to an older SDK's set.
+var supportedKeyspaceVersions = map[uint32]bool{
+	keyspaceVersion:               true,
+	keyspaceVersionLedgerInFlight: true,
+}
+
 // encodeKeyspaceVersionKey is the fixed engine-meta key holding the
 // keyspace layout version:
 //
@@ -57,9 +70,11 @@ func (e *Engine) verifyOrStampKeyspaceVersion(ctx context.Context) error {
 		if len(val) != 4 {
 			return fmt.Errorf("pebble: malformed keyspace-version stamp: %d bytes, want 4", len(val))
 		}
-		if got := binary.BigEndian.Uint32(val); got != keyspaceVersion {
+		got := binary.BigEndian.Uint32(val)
+		if !supportedKeyspaceVersions[got] {
 			return fmt.Errorf("pebble: unsupported keyspace layout v%d (want v%d single-sync); regenerate this c1z with a current SDK", got, keyspaceVersion)
 		}
+		e.ledger.inFlight.Store(got == keyspaceVersionLedgerInFlight)
 		return nil
 	case errors.Is(err, pebble.ErrNotFound):
 		empty, derr := e.isKeyspaceEmpty()
@@ -69,6 +84,7 @@ func (e *Engine) verifyOrStampKeyspaceVersion(ctx context.Context) error {
 		if !empty {
 			return fmt.Errorf("pebble: unsupported keyspace layout (no version stamp on a non-empty file; want v%d single-sync); regenerate this c1z with a current SDK", keyspaceVersion)
 		}
+		e.ledger.inFlight.Store(false)
 		if e.opts.readOnly {
 			return nil
 		}
@@ -83,9 +99,17 @@ func (e *Engine) verifyOrStampKeyspaceVersion(ctx context.Context) error {
 // the file is never left unstamped-but-populated (which the next Open
 // would reject).
 func (e *Engine) stampKeyspaceVersion() error {
-	var buf [4]byte
-	binary.BigEndian.PutUint32(buf[:], keyspaceVersion)
-	return e.db.MetaSet(encodeKeyspaceVersionKey(), buf[:], pebble.Sync)
+	return e.stampKeyspaceVersionValueLocked(keyspaceVersion)
+}
+
+func (e *Engine) stampKeyspaceVersionValueLocked(v uint32) error {
+	return e.db.MetaSet(encodeKeyspaceVersionKey(), encodeKeyspaceVersionValue(v), pebble.Sync)
+}
+
+func encodeKeyspaceVersionValue(v uint32) []byte {
+	buf := make([]byte, 4)
+	binary.BigEndian.PutUint32(buf, v)
+	return buf
 }
 
 // isKeyspaceEmpty reports whether the DB holds any v3 key at all (data,

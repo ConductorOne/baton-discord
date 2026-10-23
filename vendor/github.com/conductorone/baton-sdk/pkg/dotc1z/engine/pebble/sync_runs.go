@@ -31,13 +31,19 @@ func (e *Engine) PutSyncRunRecord(ctx context.Context, r *v3.SyncRunRecord) erro
 	}
 	// AllowSealed: sync-run metadata is legitimately stamped on a finished
 	// sync — ToPebble preserves the source ended_at, the sanitizer applies
-	// diff links / supports_diff, and the compactor renames the folded sync
-	// — all after EndSync sealed the engine.
+	// supports_diff, and the compactor renames the folded sync — all after
+	// EndSync sealed the engine.
 	return e.withWriteAllowSealed(func() error {
 		val, err := marshalRecord(r)
 		if err != nil {
 			return err
 		}
+		// writeOpts, not recordWriteOpts. The crash-image tests (pkg/sync
+		// TestChaosConnectorLostResponseThenFilesystemFailureResumes,
+		// errorfs_sweep_test.go) reopen a mid-sync CrashClone and need
+		// the shared WAL to hold at least the last checkpoint; this fsync
+		// is what pushes it there. NoSync here makes those assertions
+		// depend on how much the OS happened to flush.
 		return e.db.MetaSet(encodeSyncRunKey(), val, writeOpts(e.opts.durability))
 	})
 }

@@ -14,7 +14,7 @@ import (
 // the checker replays the log against the contract post-hoc.
 //
 // Production cost is one nil check per queue operation: the syncer only
-// attaches an audit when a test sets testQueueAudit.
+// attaches an audit when a test sets syncTestHooks.queueAudit.
 type queueAudit struct {
 	mu       native_sync.Mutex
 	events   []queueAuditEvent
@@ -50,6 +50,12 @@ const (
 	// auditBatchEnd closes a batch segment; carries whether the batch
 	// drained cleanly (no worker error).
 	auditBatchEnd
+	// auditAdmit loads already committed pending children into the worker queue.
+	auditAdmit
+	// auditCommitBegin: a ledger transition passed its pre-commit checks and
+	// released the queue lock for the durable commit. Recorded so the checker
+	// can tell a commit that began before an abort from one that began after.
+	auditCommitBegin
 )
 
 type queueAuditEvent struct {

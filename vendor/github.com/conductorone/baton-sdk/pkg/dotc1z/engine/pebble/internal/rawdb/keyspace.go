@@ -34,7 +34,14 @@ const (
 	TypeCounter      byte = 0x08
 	TypeSession      byte = 0x09
 	TypeDigest       byte = 0x0A
-	TypeEngineMeta   byte = 0xFF
+	// TypeSourceCache stores the per-scope replay manifest. It follows
+	// TypeDigest because 0x0A was assigned to digests before source-cache
+	// replay was extracted onto the current keyspace.
+	TypeSourceCache byte = 0x0B
+	// A ledger row is staged only into the same RecordBatch as its page's
+	// records (StageLedgerRow).
+	TypeLedger     byte = 0x0C
+	TypeEngineMeta byte = 0xFF
 )
 
 // Index-discriminator bytes (second byte after TypeIndex). One byte
@@ -57,6 +64,9 @@ const (
 	// pass, never maintained inline. See the engine's digest.go and
 	// grant_digest.go.
 	IdxGrantByEntitlementPrincipalHash byte = 0x08
+	IdxGrantBySourceScope              byte = 0x09
+	IdxEntitlementBySourceScope        byte = 0x0A
+	IdxResourceBySourceScope           byte = 0x0B
 )
 
 // GrantPrimaryKeyPrefixLen is the byte length of the grant primary-key
@@ -69,6 +79,14 @@ const GrantPrimaryKeyPrefixLen = 3
 // (root=0, leaf=1), keeping the global node's key disjoint from every
 // per-partition node regardless of partition bytes.
 const DigestLevelGlobalRoot byte = 2
+
+// DigestMetaIndexID is the reserved index-discriminator for
+// engine-owned metadata keys inside the digest keyspace (today only
+// GrantDigestABIStampKey). 0xFF sorts after every real digested
+// index, so [v3|TypeDigest, v3|TypeDigest|DigestMetaIndexID) bounds
+// exactly the digest NODES (see DigestNodeKeyspaceBounds). No
+// digestIndexSpec may ever claim this byte.
+const DigestMetaIndexID byte = 0xFF
 
 // === grant primary-key splices ===
 
@@ -167,6 +185,191 @@ func AppendGrantByNeedsExpansionKeyFromPrimary(dst, primaryKey []byte) ([]byte, 
 	return append(dst, primaryKey[2:]...), true
 }
 
+// AppendBySourceScopeKeyFromPrimary builds a by_source_scope index key
+// from a primary record key. The primary tail is copied byte-for-byte, so
+// replay can reconstruct the primary key without decoding the record.
+func AppendBySourceScopeKeyFromPrimary(dst, primaryKey []byte, scopeKey string) ([]byte, bool) {
+	if scopeKey == "" || len(primaryKey) < 3 || primaryKey[0] != VersionV3 || primaryKey[2] != 0 {
+		return dst, false
+	}
+	var indexID byte
+	switch primaryKey[1] {
+	case TypeGrant:
+		if _, ok := SplitGrantPrimaryKey(primaryKey); !ok {
+			return dst, false
+		}
+		indexID = IdxGrantBySourceScope
+	case TypeEntitlement:
+		indexID = IdxEntitlementBySourceScope
+	case TypeResource:
+		indexID = IdxResourceBySourceScope
+	default:
+		return dst, false
+	}
+	dst = append(dst, VersionV3, TypeIndex, indexID)
+	dst = codec.AppendTupleSeparator(dst)
+	dst = codec.AppendTupleStrings(dst, scopeKey)
+	dst = codec.AppendTupleSeparator(dst)
+	return append(dst, primaryKey[3:]...), true
+}
+
+// SourceScopeIndexPrefix bounds all rows of one record kind stamped with
+// scopeKey.
+func SourceScopeIndexPrefix(recordType byte, scopeKey string) ([]byte, bool) {
+	var indexID byte
+	switch recordType {
+	case TypeGrant:
+		indexID = IdxGrantBySourceScope
+	case TypeEntitlement:
+		indexID = IdxEntitlementBySourceScope
+	case TypeResource:
+		indexID = IdxResourceBySourceScope
+	default:
+		return nil, false
+	}
+	buf := []byte{VersionV3, TypeIndex, indexID}
+	buf = codec.AppendTupleSeparator(buf)
+	buf = codec.AppendTupleStrings(buf, scopeKey)
+	return codec.AppendTupleSeparator(buf), true
+}
+
+// Sub-family discriminators inside TypeSourceCache. Manifest entries
+// were laid down as type byte + tuple separator (0x00) + tuple, so the
+// separator byte doubles as the entry family's discriminator — existing
+// artifacts parse unchanged. Poison markers take the next byte, keeping
+// the two ranges disjoint while both stay inside the one family the
+// replay-state invalidation wipes.
+const (
+	sourceCacheEntrySubFamily  byte = 0x00
+	sourceCachePoisonSubFamily byte = 0x01
+)
+
+// SourceCacheEntryKey addresses one manifest row.
+func SourceCacheEntryKey(rowKind, scopeKey string) []byte {
+	buf := []byte{VersionV3, TypeSourceCache}
+	buf = codec.AppendTupleSeparator(buf)
+	return codec.AppendTupleStrings(buf, rowKind, scopeKey)
+}
+
+// SourceCacheEntryBounds bounds manifest entries ONLY — poison markers
+// are deliberately outside so manifest iterators (seal counting, count
+// clearing) never see non-entry values.
+func SourceCacheEntryBounds() ([]byte, []byte) {
+	lo := []byte{VersionV3, TypeSourceCache, sourceCacheEntrySubFamily}
+	return lo, UpperBound(lo)
+}
+
+// SourceCachePoisonKey addresses the per-(row_kind, scope) poison marker
+// (CO-015): present means the source sync observed a row-partition
+// violation against that scope — a cross-scope restamp or an
+// out-of-scope delete removed a row the scope's manifest entry vouches
+// for — so the scope must not be trusted as a replay source. The value
+// is empty; presence is the verdict, cause goes to logs at staging time.
+func SourceCachePoisonKey(rowKind, scopeKey string) []byte {
+	buf := []byte{VersionV3, TypeSourceCache, sourceCachePoisonSubFamily}
+	buf = codec.AppendTupleSeparator(buf)
+	return codec.AppendTupleStrings(buf, rowKind, scopeKey)
+}
+
+// SourceCachePoisonBounds bounds all poison markers.
+func SourceCachePoisonBounds() ([]byte, []byte) {
+	lo := []byte{VersionV3, TypeSourceCache, sourceCachePoisonSubFamily}
+	return lo, UpperBound(lo)
+}
+
+// SourceCacheFamilyBounds bounds the whole source-cache family: manifest
+// entries and poison markers. This is the replay-state invalidation
+// range — an artifact whose validators are wiped has nothing left for
+// poison to protect, so the markers go with them.
+func SourceCacheFamilyBounds() ([]byte, []byte) {
+	lo := []byte{VersionV3, TypeSourceCache}
+	return lo, UpperBound(lo)
+}
+
+// The ledger family (v3 | TypeLedger) is split by a sub-kind byte:
+//
+//	0x00  page rows        (LedgerKeyPrefix; tuple-encoded identity tail)
+//	0x01  fact keys        (LedgerFactPrefix; tuple(name) → 1 byte)
+//	0x02  counter buckets  (LedgerCounterPrefix; tuple(run) | sep | worker → LedgerCounterBucket;
+//	                        worker 0xFFFFFFFF is the run's reserved run-level stats bucket)
+//	0x03  frontier         (LedgerFrontierKey; single key → LedgerFrontier)
+//	0x04  pending work     (ordered work IDs)
+//	0x05  work state       (format and allocator)
+//	0x06  scheduling       (child-resource relations)
+//
+// All ride the RecordBatch and are wiped with the sync (scopedRanges
+// covers the family). Row readers bound themselves to 0x00
+// (LedgerRowBounds); the family-wide bound is for wipe and purge.
+const (
+	ledgerKindRow        byte = 0x00
+	ledgerKindFact       byte = 0x01
+	ledgerKindCounter    byte = 0x02
+	ledgerKindFrontier   byte = 0x03
+	ledgerKindPending    byte = 0x04
+	ledgerKindWorkState  byte = 0x05
+	ledgerKindScheduling byte = 0x06
+)
+
+func LedgerKeyPrefix() []byte {
+	return []byte{VersionV3, TypeLedger, ledgerKindRow}
+}
+
+func LedgerRowBounds() ([]byte, []byte) {
+	lo := LedgerKeyPrefix()
+	return lo, UpperBound(lo)
+}
+
+func LedgerFactPrefix() []byte {
+	return []byte{VersionV3, TypeLedger, ledgerKindFact}
+}
+
+func LedgerFactBounds() ([]byte, []byte) {
+	lo := LedgerFactPrefix()
+	return lo, UpperBound(lo)
+}
+
+func LedgerCounterPrefix() []byte {
+	return []byte{VersionV3, TypeLedger, ledgerKindCounter}
+}
+
+func LedgerCounterBounds() ([]byte, []byte) {
+	lo := LedgerCounterPrefix()
+	return lo, UpperBound(lo)
+}
+
+func LedgerFrontierKey() []byte {
+	return []byte{VersionV3, TypeLedger, ledgerKindFrontier}
+}
+
+func LedgerBounds() ([]byte, []byte) {
+	lo := []byte{VersionV3, TypeLedger}
+	return lo, UpperBound(lo)
+}
+
+// Duplicates the engine's encodeSyncRunKey so the takeover can stage it with
+// a family assert.
+func SyncRunKey() []byte {
+	return []byte{VersionV3, TypeSyncRun}
+}
+
+// RowKindForRecordType maps a primary record type byte to the row-kind
+// string used in manifest and poison keys. These strings are an on-disk
+// ABI shared with pkg/sourcecache's RowKind constants; the engine's
+// sourceCacheRowKindSpecs pins the same correspondence from the other
+// side.
+func RowKindForRecordType(recordType byte) (string, bool) {
+	switch recordType {
+	case TypeResource:
+		return "resources", true
+	case TypeEntitlement:
+		return "entitlements", true
+	case TypeGrant:
+		return "grants", true
+	default:
+		return "", false
+	}
+}
+
 // === resource index key + value scanners ===
 
 // EncodeResourceByParentIndexKey: index of children-by-parent:
@@ -216,6 +419,38 @@ func ScanResourceParentRaw(value []byte) (string, string, error) {
 		value = value[n:]
 	}
 	return rt, id, nil
+}
+
+// ScanSourceScopeKeyRaw extracts the string source_scope_key field from a
+// marshaled record. Last occurrence wins, matching protobuf semantics for
+// scalar fields.
+func ScanSourceScopeKeyRaw(value []byte, field protowire.Number) (string, error) {
+	var scopeKey string
+	for len(value) > 0 {
+		num, typ, n := protowire.ConsumeTag(value)
+		if n < 0 {
+			return "", protowire.ParseError(n)
+		}
+		value = value[n:]
+		if num != field {
+			n = protowire.ConsumeFieldValue(num, typ, value)
+			if n < 0 {
+				return "", protowire.ParseError(n)
+			}
+			value = value[n:]
+			continue
+		}
+		if typ != protowire.BytesType {
+			return "", fmt.Errorf("raw record: source_scope_key field %d has wire type %v", field, typ)
+		}
+		raw, n := protowire.ConsumeBytes(value)
+		if n < 0 {
+			return "", protowire.ParseError(n)
+		}
+		scopeKey = string(raw)
+		value = value[n:]
+	}
+	return scopeKey, nil
 }
 
 // ScanResourceRefRaw extracts (resource_type_id, resource_id) from a
@@ -332,9 +567,59 @@ func DeferredIdxPendingKey() []byte {
 	return codec.AppendTupleStrings(buf, "deferred_grant_idx_pending")
 }
 
-// DigestKeyspaceBounds bounds the entire digest keyspace (all digested
-// indexes) — the presence-probe range for the digests-present flag.
-func DigestKeyspaceBounds() ([]byte, []byte) {
-	lo := []byte{VersionV3, TypeDigest}
+// DeferredNeedsExpansionPendingKey marks trusted grant writes whose
+// by_needs_expansion entries require a seal-time rebuild.
+func DeferredNeedsExpansionPendingKey() []byte {
+	buf := make([]byte, 0, 2+len("deferred_grant_needs_expansion_pending"))
+	buf = append(buf, VersionV3, TypeEngineMeta)
+	return codec.AppendTupleStrings(buf, "deferred_grant_needs_expansion_pending")
+}
+
+// GrantDigestABIStampKey is the durable record of which grant-digest
+// hash ABI (the engine's GrantDigestABIVersion) this file's digest
+// state — hash-index values and digest nodes — was computed under.
+// Value: uint32 BE. Written only alongside the whole-file global root
+// (the same present-means-exact certificate), read only at Open.
+//
+// It lives INSIDE the digest keyspace deliberately: every wholesale
+// destroyer of digest state — the drop paths' full-range deletes,
+// ResetForNewSync's excision, the fold build's opening DeleteRange —
+// erases it without knowing it exists, INCLUDING the copies of those
+// paths in already-shipped SDKs that predate the stamp. Absence with
+// digest nodes present therefore always means "built by an SDK that
+// predates the stamp" — every such build hashed at ABI version 1, so
+// the engine reads a missing stamp as version 1 and compares that to
+// its current ABI like any other stamp (drop and rebuild iff they
+// differ). Under DigestMetaIndexID so no node scan or presence probe
+// visits it.
+func GrantDigestABIStampKey() []byte {
+	buf := make([]byte, 0, 3+len("grant_digest_abi")+2)
+	buf = append(buf, VersionV3, TypeDigest, DigestMetaIndexID)
+	return codec.AppendTupleStrings(buf, "grant_digest_abi")
+}
+
+// DigestNodeKeyspaceBounds bounds the digest NODE keyspace: all
+// digested indexes, excluding the DigestMetaIndexID metadata sub-range
+// — the presence-probe range for the digests-present flag. The ABI
+// stamp must not arm that flag: presence gates mutation-path
+// invalidation and repair delegation, which are about nodes.
+func DigestNodeKeyspaceBounds() ([]byte, []byte) {
+	return []byte{VersionV3, TypeDigest}, []byte{VersionV3, TypeDigest, DigestMetaIndexID}
+}
+
+func LedgerPendingPrefix() []byte {
+	return []byte{VersionV3, TypeLedger, ledgerKindPending}
+}
+
+func LedgerPendingBounds() ([]byte, []byte) {
+	lo := LedgerPendingPrefix()
 	return lo, UpperBound(lo)
+}
+
+func LedgerWorkStateKey() []byte {
+	return []byte{VersionV3, TypeLedger, ledgerKindWorkState}
+}
+
+func LedgerSchedulingPrefix() []byte {
+	return []byte{VersionV3, TypeLedger, ledgerKindScheduling}
 }

@@ -8,12 +8,14 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/types/known/anypb"
 
+	"github.com/conductorone/baton-sdk/internal/atomicfile"
 	c1zv3 "github.com/conductorone/baton-sdk/pb/c1/c1z/v3"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	reader_v2 "github.com/conductorone/baton-sdk/pb/c1/reader/v2"
@@ -29,16 +31,18 @@ import (
 type pebbleDriver struct{}
 
 var _ c1zstore.Store = (*pebbleStore)(nil)
+var _ c1zstore.WriteHookStore = (*pebbleStore)(nil)
 var _ connectorstore.Writer = (*pebbleStore)(nil)
+
+// A promoted Engine method satisfies these while skipping markDirty;
+// TestPebbleStoreDirtyCoverage checks the method set.
+var _ c1zstore.PageLedgerStore = (*pebbleStore)(nil)
 
 // Local mirrors of the optional capabilities the c1z sanitizer probes on
 // the source/destination store (pkg/c1zsanitize keeps those interfaces
 // unexported). The assertions below make a refactor that drops one of these
 // methods from either engine break the build here, rather than silently
-// disarming the sanitizer's sync-graph-metadata preservation.
-type sanitizeSyncLinkWriter interface {
-	SetSyncLink(ctx context.Context, syncID string, linkedSyncID string) error
-}
+// disarming the sanitizer's sync-run-metadata preservation.
 type sanitizeSupportsDiffWriter interface {
 	SetSupportsDiff(ctx context.Context, syncID string) error
 }
@@ -47,10 +51,8 @@ type sanitizeSyncRunMetadataReader interface {
 }
 
 var (
-	_ sanitizeSyncLinkWriter        = (*pebbleStore)(nil)
 	_ sanitizeSupportsDiffWriter    = (*pebbleStore)(nil)
 	_ sanitizeSyncRunMetadataReader = (*pebbleStore)(nil)
-	_ sanitizeSyncLinkWriter        = (*C1File)(nil)
 	_ sanitizeSupportsDiffWriter    = (*C1File)(nil)
 	_ sanitizeSyncRunMetadataReader = (*C1File)(nil)
 )
@@ -228,6 +230,29 @@ type pebbleStore struct {
 	closeMu sync.Mutex
 	closed  bool
 	dirty   bool
+
+	sourceCacheTest sourceCacheStoreTestSeams
+
+	// Nil in production. An atomic pointer, not a mutex: read on every direct
+	// write.
+	writeHookFn atomic.Pointer[c1zstore.WriteHook]
+}
+
+func (s *pebbleStore) SetWriteHook(hook c1zstore.WriteHook) {
+	if hook == nil {
+		s.writeHookFn.Store(nil)
+		return
+	}
+	s.writeHookFn.Store(&hook)
+}
+
+func (s *pebbleStore) writeHook(ctx context.Context, method string) error {
+	hook := s.writeHookFn.Load()
+	if hook == nil || !c1zstore.PageOpen(ctx) {
+		return nil
+	}
+	reason, _ := c1zstore.PageWriteBypass(ctx)
+	return (*hook)(ctx, c1zstore.WriteHookEvent{Method: method, Bypass: reason})
 }
 
 // Compile-time guard: a Pebble store satisfies the full C1ZStore
@@ -238,42 +263,12 @@ type pebbleStore struct {
 // route SQLite *C1File handles today.
 var _ c1zstore.Store = (*pebbleStore)(nil)
 
-// FileOps overrides the Adapter-level FileOps for two reasons:
-//
-//   - CloneSync threads the pebbleStore's configured payload encoding
-//     into the destination c1z (otherwise clone output would always
-//     use the default TAR_ZSTD); and
-//   - GenerateSyncDiff writes a NEW sync into THIS store, so it must
-//     flip the dirty bit — without it, Close would skip the envelope
-//     save and the diff sync would exist only in the discarded temp
-//     directory.
+// FileOps overrides the Adapter-level FileOps so CloneSync threads the
+// pebbleStore's configured payload encoding into the destination c1z
+// (otherwise clone output would always use the default TAR_ZSTD).
+// Clone/isolate write a separate file, so no dirty-marking is needed.
 func (s *pebbleStore) FileOps() c1zstore.FileOps {
-	return pebbleStoreFileOps{inner: s.FileOpsWithEncoding(s.payloadEncoding), store: s}
-}
-
-// pebbleStoreFileOps wraps the Adapter-level FileOps to route the one
-// mutating-in-place method (GenerateSyncDiff) through the store's
-// dirty-marking path. CloneSync writes a separate file and passes
-// through unchanged.
-type pebbleStoreFileOps struct {
-	inner c1zstore.FileOps
-	store *pebbleStore
-}
-
-func (f pebbleStoreFileOps) CloneSync(ctx context.Context, outPath string, syncID string, opts ...c1zstore.CloneSyncOption) error {
-	return f.inner.CloneSync(ctx, outPath, syncID, opts...)
-}
-
-func (f pebbleStoreFileOps) CopyIsolateSync(ctx context.Context, outPath string, syncID string, opts ...c1zstore.CloneSyncOption) error {
-	return f.inner.CopyIsolateSync(ctx, outPath, syncID, opts...)
-}
-
-func (f pebbleStoreFileOps) GenerateSyncDiff(ctx context.Context, baseSyncID, appliedSyncID string) (string, error) {
-	diffSyncID, err := f.inner.GenerateSyncDiff(ctx, baseSyncID, appliedSyncID)
-	if err != nil {
-		return "", err
-	}
-	return diffSyncID, f.store.markDirty(nil)
+	return s.FileOpsWithEncoding(s.payloadEncoding)
 }
 
 // SyncMeta overrides the Adapter-level SyncMeta so the MUTATING
@@ -362,6 +357,18 @@ func (s *pebbleStore) PebbleEngine() *pebble.Engine {
 		return nil
 	}
 	return s.Engine
+}
+
+func (s *pebbleStore) GrantGenerationDigest(ctx context.Context) (c1zstore.GrantGenerationDigest, bool, error) {
+	root, ok, err := s.GetGrantDigestGlobalRoot(ctx)
+	if err != nil || !ok {
+		return c1zstore.GrantGenerationDigest{}, ok, err
+	}
+	return c1zstore.GrantGenerationDigest{
+		Hash:       append([]byte(nil), root.Hash...),
+		Count:      root.Count,
+		ABIVersion: pebble.GrantDigestABIVersion,
+	}, true, nil
 }
 
 // CloseEngineOnly closes the Pebble engine without removing the
@@ -483,6 +490,16 @@ func (s *pebbleStore) EndSync(ctx context.Context) error {
 	return s.markDirty(s.Engine.EndSync(ctx))
 }
 
+// Seal is the ledger lifecycle's Sealing → Sealed transition; EndSyncWithStats
+// is the same call under the store's older name.
+func (s *pebbleStore) Seal(ctx context.Context, stats c1zstore.SyncStats) error {
+	return s.markDirty(s.Engine.EndSyncWithStats(ctx, stats))
+}
+
+func (s *pebbleStore) EndSyncWithStats(ctx context.Context, stats c1zstore.SyncStats) error {
+	return s.markDirty(s.Engine.EndSyncWithStats(ctx, stats))
+}
+
 // Cleanup is a no-op for the Pebble v3 engine. A c1z holds exactly one
 // sync by contract — StartNewSync replaces any prior sync in place (see
 // Engine.ResetForNewSync) — so there is never stale sync data to prune.
@@ -495,42 +512,77 @@ func (s *pebbleStore) Cleanup(ctx context.Context) error {
 }
 
 func (s *pebbleStore) PutAsset(ctx context.Context, assetRef *v2.AssetRef, contentType string, data []byte) error {
+	if err := s.writeHook(ctx, "PutAsset"); err != nil {
+		return err
+	}
 	return s.markDirty(s.Engine.PutAsset(ctx, assetRef, contentType, data))
 }
 
-// SetSupportsDiff marks the given sync as diff-capable, matching the
-// SQLite engine's sync_runs.supports_diff column. The c1z sanitizer
-// carries this marker from a source sync to its sanitized copy so the
-// output remains usable wherever the source was. Delegates to the
-// SyncMeta sub-store's MarkSyncSupportsDiff.
+// PutEntitlementGraphBlob / GetEntitlementGraphBlob / DeleteEntitlementGraphBlob
+// expose the entitlement-graph sidecar (see pkg/sync's EntitlementGraphStore).
+// The blob format is owned by pkg/sync/expand; the store treats it as opaque.
+func (s *pebbleStore) PutEntitlementGraphBlob(ctx context.Context, data []byte) error {
+	if err := s.writeHook(ctx, "PutEntitlementGraphBlob"); err != nil {
+		return err
+	}
+	return s.markDirty(s.PutEntitlementGraphSidecar(ctx, data))
+}
+
+func (s *pebbleStore) GetEntitlementGraphBlob(ctx context.Context) ([]byte, error) {
+	return s.GetEntitlementGraphSidecar(ctx)
+}
+
+func (s *pebbleStore) DeleteEntitlementGraphBlob(ctx context.Context) error {
+	if err := s.writeHook(ctx, "DeleteEntitlementGraphBlob"); err != nil {
+		return err
+	}
+	return s.markDirty(s.DeleteEntitlementGraphSidecar(ctx))
+}
+
+// SetSupportsDiff marks the given sync's grant expansion as complete,
+// matching the SQLite engine's sync_runs.supports_diff column (the name
+// is historical; the marker now gates `baton rollback-expansion`). The
+// c1z sanitizer carries this marker from a source sync to its sanitized
+// copy so the output remains usable wherever the source was. Delegates
+// to the SyncMeta sub-store's MarkSyncSupportsDiff.
 func (s *pebbleStore) SetSupportsDiff(ctx context.Context, syncID string) error {
 	return s.markDirty(s.SyncMeta().MarkSyncSupportsDiff(ctx, syncID))
 }
 
-// SetSyncLink records linkedSyncID as the diff partner of syncID on the
-// sync-run record (v3 linked_sync_id), matching the SQLite engine.
-//
-// This is implemented for connectorstore.Writer parity but is NOT
-// reached by the c1z sanitizer's Pebble path: a v3 Pebble c1z holds
-// exactly one sync, so there is never a second sync to link to. Cross-
-// file linkage is unpreservable on either engine regardless, because
-// sanitize mints fresh destination sync ids.
-func (s *pebbleStore) SetSyncLink(ctx context.Context, syncID string, linkedSyncID string) error {
-	if syncID == "" {
-		return fmt.Errorf("SetSyncLink: empty syncID")
+// RollbackExpansion is the Pebble form of (*C1File).RollbackExpansion.
+// WithSyncTokenRewrite is ignored: a replay re-expands a finished ledgered
+// sync through a new ledger pass, not through its token.
+func (s *pebbleStore) RollbackExpansion(ctx context.Context, syncID string, dryRun bool, opts ...RollbackOption) (*RollbackResult, error) {
+	cfg := &rollbackConfig{}
+	for _, o := range opts {
+		o(cfg)
 	}
-	r, err := s.GetSyncRunRecord(ctx, syncID)
-	if err != nil {
-		return fmt.Errorf("SetSyncLink: get: %w", err)
+	res, err := s.Engine.RollbackExpansion(ctx, syncID, dryRun, cfg.preserveSuspect)
+	switch {
+	case errors.Is(err, pebble.ErrNothingToRollBack):
+		return nil, fmt.Errorf("%w: %w", ErrSyncNotExpanded, err)
+	case errors.Is(err, pebble.ErrRollbackIncompleteCollection):
+		return nil, fmt.Errorf("%w: %w", ErrSyncNotFinished, err)
+	case err != nil:
+		return nil, err
 	}
-	r.SetLinkedSyncId(linkedSyncID)
-	if err := s.PutSyncRunRecord(ctx, r); err != nil {
-		return fmt.Errorf("SetSyncLink: put: %w", err)
+	if !dryRun {
+		s.MarkDirty()
 	}
-	return s.markDirty(nil)
+	return &RollbackResult{
+		SyncID:                  syncID,
+		GrantsDeleted:           res.GrantsDeleted,
+		SourcesCleared:          res.SourcesCleared,
+		SuspectConnectorSourced: res.SuspectConnectorSourced,
+		SuspectPreserved:        res.SuspectPreserved,
+		DryRun:                  dryRun,
+	}, nil
 }
 
 func (s *pebbleStore) PutGrants(ctx context.Context, grants ...*v2.Grant) error {
+	if err := s.writeHook(ctx, "PutGrants"); err != nil {
+		return err
+	}
 	return s.markDirty(s.Engine.PutGrants(ctx, grants...))
 }
 
@@ -539,29 +591,107 @@ func (s *pebbleStore) PutGrants(ctx context.Context, grants ...*v2.Grant) error 
 // connector output. Caller must guarantee unique external_ids across the whole
 // destination sync. See pebble.Adapter.UnsafePutUniqueGrants.
 func (s *pebbleStore) UnsafePutUniqueGrants(ctx context.Context, grants ...*v2.Grant) error {
+	if err := s.writeHook(ctx, "UnsafePutUniqueGrants"); err != nil {
+		return err
+	}
 	return s.markDirty(s.Engine.UnsafePutUniqueGrants(ctx, grants...))
 }
 
 func (s *pebbleStore) PutResourceTypes(ctx context.Context, resourceTypes ...*v2.ResourceType) error {
+	if err := s.writeHook(ctx, "PutResourceTypes"); err != nil {
+		return err
+	}
 	return s.markDirty(s.Engine.PutResourceTypes(ctx, resourceTypes...))
 }
 
 func (s *pebbleStore) PutResources(ctx context.Context, resources ...*v2.Resource) error {
+	if err := s.writeHook(ctx, "PutResources"); err != nil {
+		return err
+	}
 	return s.markDirty(s.Engine.PutResources(ctx, resources...))
 }
 
 func (s *pebbleStore) PutEntitlements(ctx context.Context, entitlements ...*v2.Entitlement) error {
+	if err := s.writeHook(ctx, "PutEntitlements"); err != nil {
+		return err
+	}
 	return s.markDirty(s.Engine.PutEntitlements(ctx, entitlements...))
 }
 
 func (s *pebbleStore) DeleteGrant(ctx context.Context, grantID string) error {
+	if err := s.writeHook(ctx, "DeleteGrant"); err != nil {
+		return err
+	}
 	return s.markDirty(s.Engine.DeleteGrant(ctx, grantID))
+}
+
+func (s *pebbleStore) BeginPage() c1zstore.PageWriter {
+	return &dirtyPageWriter{PageWriter: s.Engine.Ledger().BeginPage(), store: s}
+}
+
+func (s *pebbleStore) GetLedgerRow(ctx context.Context, id c1zstore.LedgerActionIdentity) (*c1zstore.LedgerRow, bool, error) {
+	return s.Engine.Ledger().GetRow(ctx, id)
+}
+
+func (s *pebbleStore) SetRetainLedgerTokens(retain bool) { s.Engine.Ledger().SetRetainTokens(retain) }
+
+func (s *pebbleStore) LedgerFacts(ctx context.Context) (map[string]string, error) {
+	return s.Engine.Ledger().Facts(ctx)
+}
+
+func (s *pebbleStore) FoldLedgerCounters(ctx context.Context, currentRunID string) error {
+	if err := s.writeHook(ctx, "FoldLedgerCounters"); err != nil {
+		return err
+	}
+	return s.markDirty(s.Engine.Ledger().FoldCounters(ctx, currentRunID))
+}
+
+func (s *pebbleStore) LedgerCounters(ctx context.Context) (c1zstore.LedgerCounters, error) {
+	return s.Engine.Ledger().Counters(ctx)
+}
+
+func (s *pebbleStore) LedgerFrontier(ctx context.Context) (*c1zstore.LedgerFrontier, bool, error) {
+	return s.Engine.Ledger().Frontier(ctx)
+}
+
+type dirtyPageWriter struct {
+	c1zstore.PageWriter
+	store *pebbleStore
+}
+
+func (w *dirtyPageWriter) SetTrustedImport() error {
+	writer, ok := w.PageWriter.(c1zstore.TrustedImportPageWriter)
+	if !ok {
+		return errors.New("pebble page writer does not support trusted import")
+	}
+	return writer.SetTrustedImport()
+}
+
+func (w *dirtyPageWriter) Commit(ctx context.Context, id c1zstore.LedgerActionIdentity, row *c1zstore.LedgerRow) error {
+	return w.store.markDirty(w.PageWriter.Commit(ctx, id, row))
+}
+
+func (s *pebbleStore) State(ctx context.Context) (c1zstore.LedgerState, error) {
+	return s.LedgerState(ctx)
+}
+
+func (s *pebbleStore) PutCounterBucket(ctx context.Context, runID string, worker uint32, counters c1zstore.LedgerCounters) error {
+	return s.markDirty(s.Engine.Ledger().PutCounterBucket(ctx, runID, worker, counters))
+}
+
+// Frequently the only write in a session (the syncer rebinds a FINISHED
+// sync), so nothing else would set the flag.
+func (s *pebbleStore) DropLedger(ctx context.Context) error {
+	return s.markDirty(s.Engine.Ledger().Drop(ctx))
 }
 
 // DeleteGrantByRefs is the exact grant delete for callers holding the full
 // grant: identity derives from the structured refs, never the lossy id
 // string. The syncer prefers this when available.
 func (s *pebbleStore) DeleteGrantByRefs(ctx context.Context, grant *v2.Grant) error {
+	if err := s.writeHook(ctx, "DeleteGrantByRefs"); err != nil {
+		return err
+	}
 	return s.markDirty(s.Engine.DeleteGrantByRefs(ctx, grant))
 }
 
@@ -577,6 +707,9 @@ func (s *pebbleStore) DeleteGrantByRefs(ctx context.Context, grant *v2.Grant) er
 // only costs an unnecessary flush of an unchanged file; under-marking loses
 // data.
 func (s *pebbleStore) DeleteGrantsByRefs(ctx context.Context, grants ...*v2.Grant) error {
+	if err := s.writeHook(ctx, "DeleteGrantsByRefs"); err != nil {
+		return err
+	}
 	s.MarkDirty()
 	return s.Engine.DeleteGrantsByRefs(ctx, grants...)
 }
@@ -584,12 +717,18 @@ func (s *pebbleStore) DeleteGrantsByRefs(ctx context.Context, grants ...*v2.Gran
 // DeleteResourceRecord removes a resource and marks the envelope dirty so an
 // explicit reconciliation performed by the syncer is persisted on Close.
 func (s *pebbleStore) DeleteResourceRecord(ctx context.Context, resourceTypeID, resourceID string) error {
+	if err := s.writeHook(ctx, "DeleteResourceRecord"); err != nil {
+		return err
+	}
 	return s.markDirty(s.Engine.DeleteResourceRecord(ctx, resourceTypeID, resourceID))
 }
 
 // DeleteEntitlementByRefs removes one exact entitlement identity and preserves
 // the mutation when the envelope is closed.
 func (s *pebbleStore) DeleteEntitlementByRefs(ctx context.Context, entitlement *v2.Entitlement) error {
+	if err := s.writeHook(ctx, "DeleteEntitlementByRefs"); err != nil {
+		return err
+	}
 	resourceID := entitlement.GetResource().GetId()
 	return s.markDirty(s.DeleteEntitlementRecordByIdentity(
 		ctx,
@@ -624,10 +763,16 @@ var pebbleStoreExpandedGrantImmutableAnnotationAny = func() *anypb.Any {
 }()
 
 func (g pebbleStoreGrants) StoreExpandedGrants(ctx context.Context, grants ...*v2.Grant) error {
+	if err := g.store.writeHook(ctx, "Grants.StoreExpandedGrants"); err != nil {
+		return err
+	}
 	return g.store.markDirty(g.inner.StoreExpandedGrants(ctx, grants...))
 }
 
 func (g pebbleStoreGrants) StoreNewExpandedGrants(ctx context.Context, grants ...*v2.Grant) error {
+	if err := g.store.writeHook(ctx, "Grants.StoreNewExpandedGrants"); err != nil {
+		return err
+	}
 	if fast, ok := g.inner.(interface {
 		StoreNewExpandedGrants(context.Context, ...*v2.Grant) error
 	}); ok {
@@ -637,6 +782,9 @@ func (g pebbleStoreGrants) StoreNewExpandedGrants(ctx context.Context, grants ..
 }
 
 func (g pebbleStoreGrants) StoreNewExpandedGrantContributions(ctx context.Context, dest *v2.Entitlement, principals []*v3.PrincipalRef, sources []batonGrant.Sources) error {
+	if err := g.store.writeHook(ctx, "Grants.StoreNewExpandedGrantContributions"); err != nil {
+		return err
+	}
 	if fast, ok := g.inner.(interface {
 		StoreNewExpandedGrantContributions(context.Context, *v2.Entitlement, []*v3.PrincipalRef, []batonGrant.Sources) error
 	}); ok {
@@ -672,14 +820,21 @@ func (g pebbleStoreGrants) BeginExpandedGrantLayer(ctx context.Context) (bool, e
 }
 
 func (g pebbleStoreGrants) AddExpandedGrantLayerContributions(ctx context.Context, dest *v2.Entitlement, principals []*v3.PrincipalRef, sources []batonGrant.Sources) error {
+	if err := g.store.writeHook(ctx, "Grants.AddExpandedGrantLayerContributions"); err != nil {
+		return err
+	}
 	fast, ok := g.inner.(pebbleStoreGrantLayerStorer)
 	if !ok {
 		return fmt.Errorf("expanded grant layer: store does not support layer sessions")
 	}
-	return fast.AddExpandedGrantLayerContributions(ctx, dest, principals, sources)
+	// A segment that fills mid-layer is ingested here, before Finish.
+	return g.store.markDirty(fast.AddExpandedGrantLayerContributions(ctx, dest, principals, sources))
 }
 
 func (g pebbleStoreGrants) FinishExpandedGrantLayer(ctx context.Context) error {
+	if err := g.store.writeHook(ctx, "Grants.FinishExpandedGrantLayer"); err != nil {
+		return err
+	}
 	fast, ok := g.inner.(pebbleStoreGrantLayerStorer)
 	if !ok {
 		return fmt.Errorf("expanded grant layer: store does not support layer sessions")
@@ -761,6 +916,9 @@ func (g pebbleStoreGrants) ListWithAnnotations(ctx context.Context) iter.Seq2[c1
 }
 
 func (s *pebbleStore) Close(ctx context.Context) (retErr error) {
+	if s.sourceCacheTest.beforeCloseLock != nil {
+		s.sourceCacheTest.beforeCloseLock()
+	}
 	s.closeMu.Lock()
 	defer s.closeMu.Unlock()
 	if s.closed {
@@ -819,20 +977,11 @@ func (s *pebbleStore) save(ctx context.Context) error {
 	}
 	checkpointDur := time.Since(saveStart)
 
-	tmpPath := s.outputFilePath + ".tmp"
-	out, err := os.OpenFile(tmpPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o644)
+	staged, err := atomicfile.Create(s.outputFilePath)
 	if err != nil {
 		return err
 	}
-	success := false
-	defer func() {
-		if out != nil {
-			_ = out.Close()
-		}
-		if !success {
-			_ = os.Remove(tmpPath)
-		}
-	}()
+	defer staged.Cleanup()
 
 	manifest, err := pebble.BuildManifestWithSyncRuns(ctx, s.Engine, s.payloadEncoding)
 	if err != nil {
@@ -842,23 +991,77 @@ func (s *pebbleStore) save(ctx context.Context) error {
 		manifest.SetFoldDeadBytes(s.foldDeadBytes)
 	}
 	encodeStart := time.Now()
-	if _, err := formatv3.WriteEnvelopeWithReuse(out, manifest, checkpointDir, s.payloadReuse); err != nil {
+	if _, err := formatv3.WriteEnvelopeWithReuse(staged, manifest, checkpointDir, s.payloadReuse); err != nil {
 		return err
 	}
 	ctxzap.Extract(ctx).Debug("pebble save: envelope written",
 		zap.Duration("checkpoint", checkpointDur),
 		zap.Duration("envelope_encode", time.Since(encodeStart)),
 	)
-	if err := out.Sync(); err != nil {
+	return staged.CloseAtomicallyReplace()
+}
+
+func (s *pebbleStore) PutLedgerFacts(ctx context.Context, facts map[string]string) error {
+	if err := s.writeHook(ctx, "PutLedgerFacts"); err != nil {
 		return err
 	}
-	if err := out.Close(); err != nil {
+	return s.markDirty(s.Engine.Ledger().PutFacts(ctx, facts))
+}
+
+func (s *pebbleStore) BeginExpanding(ctx context.Context) error {
+	if err := s.writeHook(ctx, "BeginExpanding"); err != nil {
 		return err
 	}
-	out = nil
-	if err := os.Rename(tmpPath, s.outputFilePath); err != nil {
+	return s.markDirty(s.Engine.Ledger().BeginExpanding(ctx))
+}
+
+func (s *pebbleStore) BeginPass(ctx context.Context, seeds []c1zstore.LedgerWork, clearFacts []string) error {
+	if err := s.writeHook(ctx, "BeginPass"); err != nil {
 		return err
 	}
-	success = true
-	return nil
+	return s.markDirty(s.Engine.Ledger().BeginPass(ctx, seeds, clearFacts))
+}
+
+func (s *pebbleStore) ArchiveLedgerReport(ctx context.Context) ([]byte, error) {
+	if err := s.writeHook(ctx, "ArchiveLedgerReport"); err != nil {
+		return nil, err
+	}
+	s.MarkDirty()
+	return s.Engine.ArchiveLedgerReport(ctx)
+}
+
+func (s *pebbleStore) PendingWork(ctx context.Context, beforeID uint64, limit int) ([]c1zstore.LedgerWork, c1zstore.LedgerQueuePhase, error) {
+	return s.Engine.Ledger().PendingWork(ctx, beforeID, limit)
+}
+
+func (s *pebbleStore) BeginCollecting(ctx context.Context, work []c1zstore.LedgerWork, facts map[string]string) error {
+	if err := s.writeHook(ctx, "BeginCollecting"); err != nil {
+		return err
+	}
+	return s.markDirty(s.Engine.Ledger().BeginCollecting(ctx, work, facts))
+}
+
+func (s *pebbleStore) BeginFromToken(
+	ctx context.Context, runID, expectedToken string, facts map[string]string, counters c1zstore.LedgerCounters, work []c1zstore.LedgerWork, phase c1zstore.LedgerQueuePhase,
+) (string, error) {
+	if err := s.writeHook(ctx, "BeginFromToken"); err != nil {
+		return "", err
+	}
+	state, err := s.Engine.Ledger().BeginFromToken(ctx, runID, expectedToken, facts, counters, work, phase)
+	return state, s.markDirty(err)
+}
+
+func (s *pebbleStore) PendingWorkAfter(ctx context.Context, afterID uint64, limit int) ([]c1zstore.LedgerWork, c1zstore.LedgerQueuePhase, error) {
+	return s.Engine.Ledger().PendingWorkAfter(ctx, afterID, limit)
+}
+
+func (s *pebbleStore) CompletePendingWork(ctx context.Context, work c1zstore.LedgerWork, runID string, counters c1zstore.LedgerCounters) error {
+	if err := s.writeHook(ctx, "CompletePendingWork"); err != nil {
+		return err
+	}
+	return s.markDirty(s.Engine.Ledger().CompletePendingWork(ctx, work, runID, counters))
+}
+
+func (s *pebbleStore) HasScheduledWork(ctx context.Context, key string) (bool, error) {
+	return s.Engine.Ledger().HasScheduledWork(ctx, key)
 }

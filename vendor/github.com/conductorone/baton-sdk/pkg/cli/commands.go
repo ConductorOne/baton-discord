@@ -304,11 +304,12 @@ func MakeMainCommand[T field.Configurable](
 				}
 				opts = append(opts,
 					connectorrunner.WithActionsEnabled(),
-					connectorrunner.WithOnDemandInvokeAction(
+					connectorrunner.WithOnDemandInvokeActionWithCredentialPrinting(
 						v.GetString("file"),
 						v.GetString("invoke-action"),
 						v.GetString("invoke-action-resource-type"), // Optional resource type for resource-scoped actions
 						invokeActionArgsStruct,
+						v.GetBool("print-credentials"),
 					))
 			case v.GetBool("list-action-schemas"):
 				opts = append(opts,
@@ -349,14 +350,6 @@ func MakeMainCommand[T field.Configurable](
 				opts = append(opts,
 					connectorrunner.WithTicketingEnabled(),
 					connectorrunner.WithGetTicket(v.GetString("ticket-id")))
-			case v.GetBool("diff-syncs"):
-				opts = append(opts,
-					connectorrunner.WithDiffSyncs(
-						v.GetString("file"),
-						v.GetString("base-sync-id"),
-						v.GetString("applied-sync-id"),
-					),
-				)
 			case v.GetBool("compact-syncs"):
 				opts = append(opts,
 					connectorrunner.WithSyncCompactor(

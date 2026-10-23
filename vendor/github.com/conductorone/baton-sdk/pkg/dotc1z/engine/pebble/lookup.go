@@ -265,6 +265,35 @@ func (e *Engine) grantPrimaryPrefixNonEmpty(prefix []byte) (bool, error) {
 // the row instead of the concat). Exactly one hit wins; zero is
 // pebble.ErrNotFound; several is ErrAmbiguousExternalID.
 func (e *Engine) resolveGrantIdentityByExternalID(ctx context.Context, grantID string) (grantIdentity, error) {
+	return e.resolveGrantIdentity(ctx, grantID, true)
+}
+
+// resolveGrantIdentityByCandidates is the bounded variant used by
+// source-cache tombstones. It never falls back to an O(all grants) scan for
+// connector-custom stored ids.
+func (e *Engine) resolveGrantIdentityByCandidates(ctx context.Context, grantID string) (grantIdentity, error) {
+	return e.resolveGrantIdentity(ctx, grantID, false)
+}
+
+func (e *Engine) resolveGrantIdentity(ctx context.Context, grantID string, allowStoredIDScan bool) (grantIdentity, error) {
+	id, err := resolveGrantIdentityCandidates(ctx, grantID, e.entitlementIdentitiesForExternalID, func(id grantIdentity) (string, error) {
+		val, closer, err := e.db.Get(encodeGrantIdentityKey(id))
+		if err != nil {
+			return "", err
+		}
+		defer closer.Close()
+		return scanGrantExternalIDRaw(val)
+	})
+	if errors.Is(err, pebble.ErrNotFound) && allowStoredIDScan {
+		return e.scanGrantIdentityByStoredExternalID(ctx, grantID)
+	}
+	return id, err
+}
+
+func resolveGrantIdentityCandidates(ctx context.Context, grantID string,
+	entitlements func(context.Context, string) ([]entitlementIdentity, error),
+	grantExternalID func(grantIdentity) (string, error),
+) (grantIdentity, error) {
 	var colons []int
 	for i := 0; i < len(grantID); i++ {
 		if grantID[i] == ':' {
@@ -272,10 +301,7 @@ func (e *Engine) resolveGrantIdentityByExternalID(ctx context.Context, grantID s
 		}
 	}
 	if len(colons) < 2 {
-		// No concat shape to split: connector-custom ids (SQLite keyed rows
-		// by these, and provisioner revokes address grants with them) are
-		// findable only by their STORED external id.
-		return e.scanGrantIdentityByStoredExternalID(ctx, grantID)
+		return grantIdentity{}, pebble.ErrNotFound
 	}
 	if len(colons) > maxBareIDColons {
 		return grantIdentity{}, fmt.Errorf("%w: grant id has %d colons; too complex to resolve safely by string", ErrAmbiguousExternalID, len(colons))
@@ -299,7 +325,7 @@ func (e *Engine) resolveGrantIdentityByExternalID(ctx context.Context, grantID s
 			return grantIdentity{}, err
 		}
 		i := colons[ii]
-		entMatches, err := e.entitlementIdentitiesForExternalID(ctx, grantID[:i])
+		entMatches, err := entitlements(ctx, grantID[:i])
 		if err != nil {
 			return grantIdentity{}, err
 		}
@@ -356,20 +382,12 @@ func (e *Engine) resolveGrantIdentityByExternalID(ctx context.Context, grantID s
 			continue
 		}
 		seen[string(key)] = struct{}{}
-		val, closer, err := e.db.Get(key)
-		if err != nil {
-			if errors.Is(err, pebble.ErrNotFound) {
-				continue
-			}
-			return grantIdentity{}, err
+		ext, err := grantExternalID(cand)
+		if errors.Is(err, pebble.ErrNotFound) {
+			continue
 		}
-		// Count the hit only when the row's PUBLIC id equals the query: a
-		// row with a connector-custom stored external id is addressed by
-		// that id, not by its concat reconstruction.
-		ext, serr := scanGrantExternalIDRaw(val)
-		closer.Close()
-		if serr != nil {
-			return grantIdentity{}, serr
+		if err != nil {
+			return grantIdentity{}, err
 		}
 		if ext != "" && ext != grantID {
 			continue
@@ -378,9 +396,7 @@ func (e *Engine) resolveGrantIdentityByExternalID(ctx context.Context, grantID s
 	}
 	switch len(hits) {
 	case 0:
-		// Every concat split missed: the id may still be a connector-custom
-		// STORED external id that merely contains colons.
-		return e.scanGrantIdentityByStoredExternalID(ctx, grantID)
+		return grantIdentity{}, pebble.ErrNotFound
 	case 1:
 		return hits[0], nil
 	default:

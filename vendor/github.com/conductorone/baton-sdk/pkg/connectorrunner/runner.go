@@ -359,9 +359,11 @@ type createAccountConfig struct {
 }
 
 type invokeActionConfig struct {
-	action         string
-	resourceTypeID string // Optional: if set, invokes a resource-scoped action
-	args           *structpb.Struct
+	action            string
+	resourceTypeID    string // Optional: if set, invokes a resource-scoped action
+	args              *structpb.Struct
+	encryptionConfigs []*v2.EncryptionConfig
+	printCredentials  bool
 }
 
 type listActionSchemasConfig struct {
@@ -382,11 +384,6 @@ type eventStreamConfig struct {
 	feedId  string
 	startAt time.Time
 	cursor  string
-}
-
-type syncDifferConfig struct {
-	baseSyncID    string
-	appliedSyncID string
 }
 
 type syncCompactorConfig struct {
@@ -419,7 +416,6 @@ type runnerConfig struct {
 	bulkCreateTicketConfig                *bulkCreateTicketConfig
 	listTicketSchemasConfig               *listTicketSchemasConfig
 	getTicketConfig                       *getTicketConfig
-	syncDifferConfig                      *syncDifferConfig
 	syncCompactorConfig                   *syncCompactorConfig
 	skipFullSync                          bool
 	storageEngine                         c1zstore.Engine
@@ -573,13 +569,49 @@ func WithOnDemandCreateAccount(c1zPath string, login string, email string, profi
 // WithOnDemandInvokeAction creates an option for invoking an action.
 // If resourceTypeID is provided, it invokes a resource-scoped action.
 func WithOnDemandInvokeAction(c1zPath string, action string, resourceTypeID string, args *structpb.Struct) Option {
+	return withOnDemandInvokeAction(c1zPath, action, resourceTypeID, args, nil, false)
+}
+
+// WithOnDemandInvokeActionWithCredentialPrinting logs decrypted action credentials when printCredentials is true.
+func WithOnDemandInvokeActionWithCredentialPrinting(
+	c1zPath string,
+	action string,
+	resourceTypeID string,
+	args *structpb.Struct,
+	printCredentials bool,
+) Option {
+	return withOnDemandInvokeAction(c1zPath, action, resourceTypeID, args, nil, printCredentials)
+}
+
+// WithOnDemandInvokeActionWithEncryption creates an option for invoking an
+// action with recipients for encrypted results.
+func WithOnDemandInvokeActionWithEncryption(
+	c1zPath string,
+	action string,
+	resourceTypeID string,
+	args *structpb.Struct,
+	encryptionConfigs []*v2.EncryptionConfig,
+) Option {
+	return withOnDemandInvokeAction(c1zPath, action, resourceTypeID, args, encryptionConfigs, false)
+}
+
+func withOnDemandInvokeAction(
+	c1zPath string,
+	action string,
+	resourceTypeID string,
+	args *structpb.Struct,
+	encryptionConfigs []*v2.EncryptionConfig,
+	printCredentials bool,
+) Option {
 	return func(ctx context.Context, cfg *runnerConfig) error {
 		cfg.onDemand = true
 		cfg.c1zPath = c1zPath
 		cfg.invokeActionConfig = &invokeActionConfig{
-			action:         action,
-			resourceTypeID: resourceTypeID,
-			args:           args,
+			action:            action,
+			resourceTypeID:    resourceTypeID,
+			args:              args,
+			encryptionConfigs: encryptionConfigs,
+			printCredentials:  printCredentials,
 		}
 		return nil
 	}
@@ -819,18 +851,6 @@ func WithKeepPreviousSyncC1ZRuntimeOptIn() Option {
 	}
 }
 
-func WithDiffSyncs(c1zPath string, baseSyncID string, newSyncID string) Option {
-	return func(ctx context.Context, cfg *runnerConfig) error {
-		cfg.onDemand = true
-		cfg.c1zPath = c1zPath
-		cfg.syncDifferConfig = &syncDifferConfig{
-			baseSyncID:    baseSyncID,
-			appliedSyncID: newSyncID,
-		}
-		return nil
-	}
-}
-
 func WithSyncCompactor(outputPath string, filePaths []string, syncIDs []string) Option {
 	return func(ctx context.Context, cfg *runnerConfig) error {
 		cfg.onDemand = true
@@ -1058,7 +1078,24 @@ func NewConnectorRunner(ctx context.Context, c types.ConnectorServer, opts ...Op
 			tm = local.NewCreateAccountManager(ctx, cfg.c1zPath, cfg.createAccountConfig.login, cfg.createAccountConfig.email, cfg.createAccountConfig.profile, cfg.createAccountConfig.resourceTypeID)
 
 		case cfg.invokeActionConfig != nil:
-			tm = local.NewActionInvoker(ctx, cfg.c1zPath, cfg.invokeActionConfig.action, cfg.invokeActionConfig.resourceTypeID, cfg.invokeActionConfig.args)
+			if cfg.invokeActionConfig.printCredentials {
+				tm = local.NewActionInvokerWithCredentialPrinting(
+					ctx,
+					cfg.c1zPath,
+					cfg.invokeActionConfig.action,
+					cfg.invokeActionConfig.resourceTypeID,
+					cfg.invokeActionConfig.args,
+				)
+			} else {
+				tm = local.NewActionInvokerWithEncryption(
+					ctx,
+					cfg.c1zPath,
+					cfg.invokeActionConfig.action,
+					cfg.invokeActionConfig.resourceTypeID,
+					cfg.invokeActionConfig.args,
+					cfg.invokeActionConfig.encryptionConfigs,
+				)
+			}
 
 		case cfg.listActionSchemasConfig != nil:
 			tm = local.NewListActionSchemas(ctx, cfg.listActionSchemasConfig.resourceTypeID)
@@ -1079,8 +1116,6 @@ func NewConnectorRunner(ctx context.Context, c types.ConnectorServer, opts ...Op
 			tm = local.NewGetTicket(ctx, cfg.getTicketConfig.ticketID)
 		case cfg.bulkCreateTicketConfig != nil:
 			tm = local.NewBulkTicket(ctx, cfg.bulkCreateTicketConfig.templatePath)
-		case cfg.syncDifferConfig != nil:
-			tm = local.NewDiffer(ctx, cfg.c1zPath, cfg.syncDifferConfig.baseSyncID, cfg.syncDifferConfig.appliedSyncID)
 		case cfg.syncCompactorConfig != nil:
 			c := cfg.syncCompactorConfig
 			if len(c.filePaths) != len(c.syncIDs) {
