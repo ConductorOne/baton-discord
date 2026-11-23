@@ -3,7 +3,7 @@ module github.com/ConductorOne/baton-discord
 go 1.27.4
 
 require (
-	github.com/conductorone/baton-sdk v0.46.0
+	github.com/conductorone/baton-sdk v0.46.1
 	github.com/disgoorg/disgo v0.19.6
 	github.com/disgoorg/snowflake/v2 v2.0.3
 	github.com/ennyjfrick/ruleguard-logfatal v0.0.2
@@ -49,9 +49,9 @@ require (
 	github.com/cockroachdb/redact v1.1.8 // indirect
 	github.com/cockroachdb/swiss v0.0.0-20260820225851-aa852fb3c14e // indirect
 	github.com/cockroachdb/tokenbucket v0.0.0-20250429170803-42689b6311bb // indirect
-	github.com/conductorone/dpop v0.4.0 // indirect
-	github.com/conductorone/dpop/integrations/dpop_grpc v0.4.0 // indirect
-	github.com/conductorone/dpop/integrations/dpop_oauth2 v0.4.0 // indirect
+	github.com/conductorone/dpop v0.4.1 // indirect
+	github.com/conductorone/dpop/integrations/dpop_grpc v0.4.1 // indirect
+	github.com/conductorone/dpop/integrations/dpop_oauth2 v0.4.1 // indirect
 	github.com/deckarep/golang-set/v2 v2.9.0 // indirect
 	github.com/disgoorg/json/v2 v2.0.0 // indirect
 	github.com/disgoorg/omit v1.0.0 // indirect
