@@ -3,7 +3,7 @@ module github.com/ConductorOne/baton-discord
 go 1.27.4
 
 require (
-	github.com/conductorone/baton-sdk v0.46.1
+	github.com/conductorone/baton-sdk v0.47.0
 	github.com/disgoorg/disgo v0.19.6
 	github.com/disgoorg/snowflake/v2 v2.0.3
 	github.com/ennyjfrick/ruleguard-logfatal v0.0.2
